@@ -24,6 +24,11 @@ first heartbeat while still holding the write half.
 back to where it started. Against the fork it fails, 200 leaked out of 200;
 against this build it passes with zero. It runs on every push.
 
+A one-hour soak against the release binary, 5070 connections: descriptor count
+flat at 25 the entire time, and the server's own console reported zero sockets
+in `CLOSE_WAIT` and an empty websocket registry. The same soak against the fork
+climbs 56 → 196 descriptors in two minutes.
+
 [`NOTES.md`](NOTES.md) has the full diagnosis, the measurements, and every
 decision taken during the rebase. [`patches/INVENTORY.md`](patches/INVENTORY.md)
 says what was kept from the fork, what was dropped, and why.
