@@ -609,7 +609,12 @@ impl RendezvousServer {
                         rf.socket_addr = AddrMangle::encode(addr).into();
                         msg_out.set_request_relay(rf);
                         let peer_addr = peer.read().await.socket_addr;
-                        self.tx.send(Data::Msg(msg_out.into(), peer_addr)).ok();
+                        // Same routing decision as a punch-hole request: a peer
+                        // that is only reachable over its websocket has no UDP
+                        // address for Data::Msg to go to.
+                        if !self.push_to_ws_peer(peer_addr, &msg_out) {
+                            self.tx.send(Data::Msg(msg_out.into(), peer_addr)).ok();
+                        }
                     }
                     return true;
                 }
