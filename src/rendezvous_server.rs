@@ -36,8 +36,9 @@ use ipnetwork::Ipv4Network;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     sync::Arc,
+    sync::Mutex as StdMutex,
     time::Instant,
 };
 
@@ -72,6 +73,14 @@ impl Sink {
         }
     }
 
+    /// Transport-level keepalive. tungstenite answers a Ping with a Pong
+    /// automatically, so a live peer's reply reaches us as an inbound frame.
+    async fn ping(&mut self) {
+        if let Sink::Ws(s) = self {
+            allow_err!(s.sink.send(tungstenite::Message::Ping(Vec::new())).await);
+        }
+    }
+
     async fn send(&mut self, msg: &RendezvousMessage) {
         let Ok(mut bytes) = msg.write_to_bytes() else {
             return;
@@ -99,6 +108,53 @@ type RelayServers = Vec<String>;
 const CHECK_RELAY_TIMEOUT: u64 = 3_000;
 static ALWAYS_USE_RELAY: AtomicBool = AtomicBool::new(false);
 static MUST_LOGIN: AtomicBool = AtomicBool::new(false);
+
+/// How long a websocket may go without a single inbound frame - including the
+/// Pong answering our Ping - before we close it. Override with WS_IDLE_TIMEOUT
+/// (seconds).
+static WS_IDLE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(90_000);
+const WS_IDLE_TIMEOUT_DEFAULT_SEC: u64 = 90;
+/// Silence after which we probe the peer with a Ping. Its Pong counts as an
+/// inbound frame, so a live but quiet client never hits the idle timeout.
+const WS_PING_INTERVAL_MS: u64 = 30_000;
+/// Distinguishes successive connections that map to the same key, which happens
+/// whenever X-Real-IP rewrites the address to `ip:0`.
+static WS_CONN_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+type WsSender = mpsc::UnboundedSender<RendezvousMessage>;
+type WsPeers = Arc<StdMutex<HashMap<SocketAddr, WsPeer>>>;
+
+/// A way to reach a websocket peer: a channel into the task that owns its
+/// socket. Deliberately not the socket, nor any part of it - see NOTES.md.
+struct WsPeer {
+    conn: u64,
+    tx: WsSender,
+}
+
+/// What a websocket connection task needs in order to register itself.
+struct WsConnCtx {
+    conn: u64,
+    tx: WsSender,
+}
+
+/// Removes a connection's registry entry when its task ends, for any reason
+/// including a panic. The serial check means a reconnect that has already
+/// claimed the same key is left alone.
+struct WsPeerGuard {
+    peers: WsPeers,
+    addr: SocketAddr,
+    conn: u64,
+}
+
+impl Drop for WsPeerGuard {
+    fn drop(&mut self) {
+        if let Ok(mut peers) = self.peers.lock() {
+            if peers.get(&self.addr).map_or(false, |p| p.conn == self.conn) {
+                peers.remove(&self.addr);
+            }
+        }
+    }
+}
 
 // Store punch hole requests
 use once_cell::sync::Lazy;
@@ -136,9 +192,9 @@ pub struct RendezvousServer {
     relay_servers0: Arc<RelayServers>,
     rendezvous_servers: Arc<Vec<String>>,
     inner: Arc<Inner>,
-    /// Websocket peers, so that a punch-hole request can be pushed to a peer
-    /// that has no UDP registration and is only reachable over its websocket.
-    ws_map: Arc<Mutex<HashMap<SocketAddr, Sink>>>,
+    /// Websocket peers, so that a message can be pushed to a peer that has no
+    /// UDP registration and is only reachable over its websocket.
+    ws_peers: WsPeers,
 }
 
 enum LoopFailure {
@@ -206,7 +262,7 @@ impl RendezvousServer {
                 secure_tcp_pk_b,
                 secure_tcp_sk_b,
             }),
-            ws_map: Arc::new(Mutex::new(HashMap::new())),
+            ws_peers: Arc::new(StdMutex::new(HashMap::new())),
         };
         log::info!("mask: {:?}", rs.inner.mask);
         log::info!("local-ip: {:?}", rs.inner.local_ip);
@@ -247,6 +303,14 @@ impl RendezvousServer {
         {
             MUST_LOGIN.store(true, Ordering::SeqCst);
         }
+        let idle = get_arg("ws-idle-timeout")
+            .parse::<u64>()
+            .ok()
+            .filter(|v| *v > 0)
+            .unwrap_or(WS_IDLE_TIMEOUT_DEFAULT_SEC);
+        WS_IDLE_TIMEOUT_MS.store(idle * 1000, Ordering::SeqCst);
+        log::info!("WS_IDLE_TIMEOUT={}s", idle);
+
         log::info!(
             "MUST_LOGIN={}",
             if MUST_LOGIN.load(Ordering::SeqCst) {
@@ -505,6 +569,9 @@ impl RendezvousServer {
     }
 
     #[inline]
+    /// Returns whether the connection should stay open. A websocket is a
+    /// persistent connection, so anything handled successfully keeps it alive;
+    /// a plain TCP connection keeps upstream's one-shot behaviour.
     async fn handle_tcp(
         &mut self,
         bytes: &[u8],
@@ -512,12 +579,19 @@ impl RendezvousServer {
         addr: SocketAddr,
         key: &str,
         ws: bool,
+        ws_conn: Option<&WsConnCtx>,
     ) -> bool {
         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
             match msg_in.union {
                 Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
-                    // there maybe several attempt, so sink can be none
-                    if let Some(sink) = sink.take() {
+                    // The reply may arrive on a different connection, so the
+                    // caller needs a route back to this one. Over a websocket
+                    // that is the peer registry; over TCP it is tcp_punch, which
+                    // takes the sink. There may be several attempts, so the sink
+                    // can already be gone.
+                    if let Some(ctx) = ws_conn {
+                        self.register_ws_peer(addr, ctx);
+                    } else if let Some(sink) = sink.take() {
                         self.tcp_punch.lock().await.insert(try_into_v4(addr), sink);
                     }
                     allow_err!(self.handle_tcp_punch_hole_request(addr, ph, key, ws).await);
@@ -525,7 +599,9 @@ impl RendezvousServer {
                 }
                 Some(rendezvous_message::Union::RequestRelay(mut rf)) => {
                     // there maybe several attempt, so sink can be none
-                    if let Some(sink) = sink.take() {
+                    if let Some(ctx) = ws_conn {
+                        self.register_ws_peer(addr, ctx);
+                    } else if let Some(sink) = sink.take() {
                         self.tcp_punch.lock().await.insert(try_into_v4(addr), sink);
                     }
                     if let Some(peer) = self.pm.get_in_memory(&rf.id).await {
@@ -622,6 +698,9 @@ impl RendezvousServer {
                             ..Default::default()
                         });
                         Self::send_to_sink(sink, msg_out).await;
+                        if let Some(ctx) = ws_conn {
+                            self.register_ws_peer(addr, ctx);
+                        }
                         if self.inner.serial > rp.serial {
                             let mut msg_out = RendezvousMessage::new();
                             msg_out.set_configure_update(ConfigUpdate {
@@ -647,18 +726,18 @@ impl RendezvousServer {
                     if res != register_pk_response::Result::OK {
                         return false;
                     }
-                    if ws {
-                        // for ws, we can only get addr when register_pk
-                        if let Some(sink) = sink.take() {
-                            self.ws_map.lock().await.insert(try_into_v4(addr), sink);
-                        }
+                    if let Some(ctx) = ws_conn {
+                        // For ws, this is where we learn the peer's address.
+                        self.register_ws_peer(addr, ctx);
                     }
                     return true;
                 }
                 _ => {}
             }
         }
-        false
+        // A websocket stays open; the idle timeout in handle_listener_inner is
+        // what bounds its lifetime.
+        ws
     }
 
     #[inline]
@@ -1039,8 +1118,48 @@ impl RendezvousServer {
         Ok(())
     }
 
+    /// Record how to reach this websocket peer. Overwrites any older entry for
+    /// the same address, whose own guard will then leave it alone.
+    fn register_ws_peer(&self, addr: SocketAddr, ctx: &WsConnCtx) {
+        if let Ok(mut peers) = self.ws_peers.lock() {
+            peers.insert(
+                try_into_v4(addr),
+                WsPeer {
+                    conn: ctx.conn,
+                    tx: ctx.tx.clone(),
+                },
+            );
+        }
+    }
+
+    /// Hand a message to the task that owns this peer's websocket. Returns
+    /// false if there is no such task, having dropped the stale entry; the
+    /// caller then falls back to the UDP path.
+    fn push_to_ws_peer(&self, addr: SocketAddr, msg: &RendezvousMessage) -> bool {
+        let key = try_into_v4(addr);
+        let Ok(mut peers) = self.ws_peers.lock() else {
+            return false;
+        };
+        let Some(peer) = peers.get(&key) else {
+            return false;
+        };
+        if peer.tx.send(msg.clone()).is_ok() {
+            true
+        } else {
+            peers.remove(&key);
+            false
+        }
+    }
+
+    fn ws_peer_count(&self) -> usize {
+        self.ws_peers.lock().map(|p| p.len()).unwrap_or(0)
+    }
+
     #[inline]
     async fn send_to_tcp(&mut self, msg: RendezvousMessage, addr: SocketAddr) {
+        if self.push_to_ws_peer(addr, &msg) {
+            return;
+        }
         let mut tcp = self.tcp_punch.lock().await.remove(&try_into_v4(addr));
         tokio::spawn(async move {
             Self::send_to_sink(&mut tcp, msg).await;
@@ -1060,6 +1179,9 @@ impl RendezvousServer {
         msg: RendezvousMessage,
         addr: SocketAddr,
     ) -> ResultType<()> {
+        if self.push_to_ws_peer(addr, &msg) {
+            return Ok(());
+        }
         let mut sink = self.tcp_punch.lock().await.remove(&try_into_v4(addr));
         Self::send_to_sink(&mut sink, msg).await;
         Ok(())
@@ -1075,10 +1197,7 @@ impl RendezvousServer {
     ) -> ResultType<()> {
         let (msg, to_addr) = self.handle_punch_hole_request(addr, ph, key, ws).await?;
         if let Some(addr) = to_addr {
-            let mut sink = self.ws_map.lock().await.remove(&try_into_v4(addr));
-            if let Some(s) = sink.as_mut() {
-                s.send(&msg).await;
-            } else {
+            if !self.push_to_ws_peer(addr, &msg) {
                 self.tx.send(Data::Msg(msg.into(), addr))?;
             }
         } else {
@@ -1159,7 +1278,7 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
@@ -1167,7 +1286,8 @@ impl RendezvousServer {
                     "punch-requests(pr) [<number>] [-]",
                     "always-use-relay(aur) [Y|N]",
                     "test-geo(tg) <ip1> <ip2>",
-                    "must-login(ml) [Y|N]"
+                    "must-login(ml) [Y|N]",
+                    "ws-peers(wp)"
                 )
             }
             Some("relay-servers" | "rs") => {
@@ -1309,6 +1429,9 @@ impl RendezvousServer {
                     );
                 }
             }
+            Some("ws-peers" | "wp") => {
+                let _ = writeln!(res, "ws peers: {}", self.ws_peer_count());
+            }
             Some("must-login" | "ml") => {
                 if let Some(v) = fds.next() {
                     MUST_LOGIN.store(v.to_uppercase() == "Y", Ordering::SeqCst);
@@ -1441,10 +1564,57 @@ impl RendezvousServer {
                 sink: a,
                 encrypt: None,
             }));
-            while let Ok(Some(Ok(msg))) = timeout(30_000, b.next()).await {
-                if let tungstenite::Message::Binary(bytes) = msg {
-                    if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
-                        break;
+
+            // This task owns the socket for as long as the socket exists. What
+            // goes into the peer registry is a channel into this loop, and the
+            // guard takes it back out when the loop ends - normally, on error,
+            // on timeout or on panic. See NOTES.md.
+            let (tx_ws, mut rx_ws) = mpsc::unbounded_channel::<RendezvousMessage>();
+            let ctx = WsConnCtx {
+                conn: WS_CONN_SERIAL.fetch_add(1, Ordering::SeqCst),
+                tx: tx_ws,
+            };
+            let _guard = WsPeerGuard {
+                peers: self.ws_peers.clone(),
+                addr: try_into_v4(addr),
+                conn: ctx.conn,
+            };
+
+            let idle_timeout_ms = WS_IDLE_TIMEOUT_MS.load(Ordering::SeqCst);
+            let mut last_seen = Instant::now();
+            loop {
+                tokio::select! {
+                    pushed = rx_ws.recv() => {
+                        match pushed {
+                            Some(msg) => Self::send_to_sink(&mut sink, msg).await,
+                            None => break,
+                        }
+                    }
+                    incoming = timeout(WS_PING_INTERVAL_MS, b.next()) => {
+                        match incoming {
+                            Ok(Some(Ok(msg))) => {
+                                last_seen = Instant::now();
+                                if let tungstenite::Message::Binary(bytes) = msg {
+                                    if !self
+                                        .handle_tcp(&bytes, &mut sink, addr, key, ws, Some(&ctx))
+                                        .await
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                            // Peer closed, or the stream broke.
+                            Ok(Some(Err(_))) | Ok(None) => break,
+                            Err(_) => {
+                                if last_seen.elapsed().as_millis() as u64 >= idle_timeout_ms {
+                                    log::debug!("Websocket {} idle, closing", addr);
+                                    break;
+                                }
+                                if let Some(sink) = sink.as_mut() {
+                                    sink.ping().await;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1467,7 +1637,10 @@ impl RendezvousServer {
                         }
                     }
                 }
-                if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+                if !self
+                    .handle_tcp(&bytes, &mut sink, addr, key, ws, None)
+                    .await
+                {
                     break;
                 }
             }
