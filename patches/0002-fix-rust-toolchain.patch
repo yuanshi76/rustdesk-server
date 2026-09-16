@@ -1,0 +1,48 @@
+From 10c23984a73f77a6f9dce82be784dbdf6e40cfbb Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sat, 11 Jan 2025 21:54:34 +0800
+Subject: [PATCH 02/32] fix: rust-toolchain
+
+---
+ .github/workflows/build.yaml | 4 ++--
+ .github/workflows/ghcr.yml   | 2 +-
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/.github/workflows/build.yaml b/.github/workflows/build.yaml
+index 92c31eb..754ff40 100644
+--- a/.github/workflows/build.yaml
++++ b/.github/workflows/build.yaml
+@@ -45,7 +45,7 @@ jobs:
+       - name: Install toolchain
+         uses: actions-rs/toolchain@v1
+         with:
+-          toolchain: "1.70.0"
++          toolchain: stable
+           override: true
+           default: true
+           components: rustfmt
+@@ -84,7 +84,7 @@ jobs:
+       - name: Install toolchain
+         uses: actions-rs/toolchain@v1
+         with:
+-          toolchain: "1.70.0"
++          toolchain: stable
+           override: true
+           default: true
+           components: rustfmt
+diff --git a/.github/workflows/ghcr.yml b/.github/workflows/ghcr.yml
+index 5069e26..0e7bf20 100644
+--- a/.github/workflows/ghcr.yml
++++ b/.github/workflows/ghcr.yml
+@@ -40,7 +40,7 @@ jobs:
+       - name: Install Rust toolchain
+         uses: dtolnay/rust-toolchain@v1
+         with:
+-          toolchain: "1.70.0"
++          toolchain: stable
+           targets: ${{ matrix.job.target }}
+           components: "rustfmt"
+           
+-- 
+2.54.0 (Apple Git-157)
+

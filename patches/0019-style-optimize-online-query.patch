@@ -1,0 +1,102 @@
+From d095ac8cecfb7cdadf09822dc5be0ac92d2dfbd0 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Wed, 22 Jan 2025 19:44:16 +0800
+Subject: [PATCH 19/32] style: optimize online query
+
+---
+ Cargo.lock               |  3 ++-
+ src/rendezvous_server.rs | 43 +++++++++++++++++-----------------------
+ 2 files changed, 20 insertions(+), 26 deletions(-)
+
+diff --git a/Cargo.lock b/Cargo.lock
+index 90f4714..4005f6e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -342,6 +342,7 @@ dependencies = [
+  "iana-time-zone",
+  "js-sys",
+  "num-traits",
++ "serde",
+  "wasm-bindgen",
+  "windows-targets 0.52.6",
+ ]
+@@ -1068,7 +1069,7 @@ dependencies = [
+ 
+ [[package]]
+ name = "hbbs"
+-version = "1.1.13"
++version = "1.1.14"
+ dependencies = [
+  "async-speed-limit",
+  "async-trait",
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 6b0e3f2..33bb899 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -624,19 +624,7 @@ impl RendezvousServer {
+                     }
+                 }
+                 Some(rendezvous_message::Union::OnlineRequest(or)) => {
+-                    let mut states = BytesMut::zeroed((or.peers.len() + 7) / 8);
+-                    for (i, peer_id) in or.peers.iter().enumerate() {
+-                        if let Some(peer) = self.pm.get_in_memory(peer_id).await {
+-                            let elapsed = peer.read().await.last_reg_time.elapsed().as_millis() as i32;
+-                            // bytes index from left to right
+-                            let states_idx = i / 8;
+-                            let bit_idx = 7 - i % 8;
+-                            if elapsed < REG_TIMEOUT {
+-                                states[states_idx] |= 0x01 << bit_idx;
+-                            }
+-                        }
+-                    }
+-
++                    let mut states = self.peers_online_state(or.peers).await;
+                     let mut msg_out = RendezvousMessage::new();
+                     msg_out.set_online_response(OnlineResponse {
+                         states: states.into(),
+@@ -650,6 +638,22 @@ impl RendezvousServer {
+         false
+     }
+ 
++    async fn peers_online_state(&mut self, peers: Vec<String>) -> BytesMut {
++        let mut states = BytesMut::zeroed((peers.len() + 7) / 8);
++        for (i, peer_id) in peers.iter().enumerate() {
++            if let Some(peer) = self.pm.get_in_memory(peer_id).await {
++                let elapsed = peer.read().await.last_reg_time.elapsed().as_millis() as i32;
++                // bytes index from left to right
++                let states_idx = i / 8;
++                let bit_idx = 7 - i % 8;
++                if elapsed < REG_TIMEOUT {
++                    states[states_idx] |= 0x01 << bit_idx;
++                }
++            }
++        }
++        states
++    }
++
+     #[inline]
+     async fn update_addr(
+         &mut self,
+@@ -882,18 +886,7 @@ impl RendezvousServer {
+         stream: &mut FramedStream,
+         peers: Vec<String>,
+     ) -> ResultType<()> {
+-        let mut states = BytesMut::zeroed((peers.len() + 7) / 8);
+-        for (i, peer_id) in peers.iter().enumerate() {
+-            if let Some(peer) = self.pm.get_in_memory(peer_id).await {
+-                let elapsed = peer.read().await.last_reg_time.elapsed().as_millis() as i32;
+-                // bytes index from left to right
+-                let states_idx = i / 8;
+-                let bit_idx = 7 - i % 8;
+-                if elapsed < REG_TIMEOUT {
+-                    states[states_idx] |= 0x01 << bit_idx;
+-                }
+-            }
+-        }
++        let mut states = self.peers_online_state(peers).await;
+ 
+         let mut msg_out = RendezvousMessage::new();
+         msg_out.set_online_response(OnlineResponse {
+-- 
+2.54.0 (Apple Git-157)
+

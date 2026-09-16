@@ -1,0 +1,34 @@
+From f85f6910d2e39ccbf2ed404dfe37d58dc07aa6c4 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Mon, 1 Sep 2025 08:33:32 +0800
+Subject: [PATCH 31/32] chore: Major tag use x.x
+
+---
+ .github/workflows/build-test.yaml | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/.github/workflows/build-test.yaml b/.github/workflows/build-test.yaml
+index 91cd068..198e4a9 100644
+--- a/.github/workflows/build-test.yaml
++++ b/.github/workflows/build-test.yaml
+@@ -126,7 +126,7 @@ jobs:
+         id: vars
+         run: |
+           T=${GITHUB_REF#refs/*/}
+-          M=${T%%.*}
++          M=${T%.*}
+           echo "GIT_TAG=$T" >> $GITHUB_ENV
+           echo "MAJOR_TAG=$M" >> $GITHUB_ENV
+ 
+@@ -163,7 +163,7 @@ jobs:
+         id: vars
+         run: |
+           T=${GITHUB_REF#refs/*/}
+-          M=${T%%.*}
++          M=${T%.*}
+           echo "GIT_TAG=$T" >> $GITHUB_ENV
+           echo "MAJOR_TAG=$M" >> $GITHUB_ENV
+ 
+-- 
+2.54.0 (Apple Git-157)
+

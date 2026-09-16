@@ -1,0 +1,24 @@
+From 5aabb038f49d7223148b162528498b0d06ac2fdb Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 31 Aug 2025 16:12:36 +0800
+Subject: [PATCH 26/32] =?UTF-8?q?fix:=20=E4=BF=AE=E5=A4=8Dhbb=5Fcommon?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ libs/hbb_common | 1 -
+ 1 file changed, 1 deletion(-)
+ delete mode 100644 libs/hbb_common
+
+diff --git a/libs/hbb_common b/libs/hbb_common
+deleted file mode 100644
+index baf861b..0000000
+--- a/libs/hbb_common
++++ /dev/null
+@@ -1 +0,0 @@
+-83419b6549636ee39dacef7776c473f5802e08d6
+\ No newline at end of file
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,26 @@
+From 2975151e973b2666e0459a99d33f06d0834583cf Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Fri, 7 Feb 2025 18:34:58 +0800
+Subject: [PATCH 21/32] style: Docker workdir set /app
+
+---
+ docker/Dockerfile | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index 0ef5bb7..05b942e 100755
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -19,7 +19,8 @@ EXPOSE 21114 21115 21116 21116/udp 21117 21118 21119
+ 
+ HEALTHCHECK --interval=10s --timeout=5s CMD /usr/bin/healthcheck.sh
+ 
+-WORKDIR /data
++WORKDIR /app
++
+ VOLUME /app/data
+ 
+ VOLUME /data
+-- 
+2.54.0 (Apple Git-157)
+

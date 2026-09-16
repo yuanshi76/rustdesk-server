@@ -1,0 +1,26 @@
+From bb45a621a455f05ff18bdcb903841c822cbad5cb Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 12 Jan 2025 14:21:51 +0800
+Subject: [PATCH 07/32] style: Remove Unnecessary log in tcp.rs
+
+---
+ libs/hbb_common/src/tcp.rs | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/libs/hbb_common/src/tcp.rs b/libs/hbb_common/src/tcp.rs
+index 8071bc6..05d22a1 100644
+--- a/libs/hbb_common/src/tcp.rs
++++ b/libs/hbb_common/src/tcp.rs
+@@ -191,9 +191,7 @@ impl FramedStream {
+     #[inline]
+     pub async fn send_raw(&mut self, msg: Vec<u8>) -> ResultType<()> {
+         let mut msg = msg;
+-        log::debug!("Send message: {:?}", msg);
+         if let Some(key) = self.2.as_mut() {
+-            log::debug!("Encrypting message");
+             msg = key.enc(&msg);
+         }
+         self.send_bytes(bytes::Bytes::from(msg)).await?;
+-- 
+2.54.0 (Apple Git-157)
+

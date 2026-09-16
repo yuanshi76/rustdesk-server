@@ -1,0 +1,443 @@
+From 9bae660559e8d31b90607be0a1f46daa1ad155e5 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Thu, 9 Jan 2025 18:32:31 +0800
+Subject: [PATCH 01/32] feat: Add KeyExchange and Encrypted tcpstream
+
+From https://github.com/rustdesk/rustdesk-server/pull/400/commits/7e6ddf06a988d31beaf80dc6ea12ad70068b38cb
+
+------
+---
+ libs/hbb_common/protos/rendezvous.proto |   5 +
+ libs/hbb_common/src/tcp.rs              |  98 +++++++++++++----
+ src/rendezvous_server.rs                | 133 ++++++++++++++++++++++--
+ 3 files changed, 203 insertions(+), 33 deletions(-)
+
+diff --git a/libs/hbb_common/protos/rendezvous.proto b/libs/hbb_common/protos/rendezvous.proto
+index 1ac60f3..ebd9519 100644
+--- a/libs/hbb_common/protos/rendezvous.proto
++++ b/libs/hbb_common/protos/rendezvous.proto
+@@ -157,6 +157,10 @@ message OnlineResponse {
+   bytes states = 1;
+ }
+ 
++message KeyExchange {
++  repeated bytes keys = 1;
++}
++
+ message RendezvousMessage {
+   oneof union {
+     RegisterPeer register_peer = 6;
+@@ -178,5 +182,6 @@ message RendezvousMessage {
+     PeerDiscovery peer_discovery = 22;
+     OnlineRequest online_request = 23;
+     OnlineResponse online_response = 24;
++    KeyExchange key_exchange = 25;
+   }
+ }
+diff --git a/libs/hbb_common/src/tcp.rs b/libs/hbb_common/src/tcp.rs
+index e483abf..8071bc6 100644
+--- a/libs/hbb_common/src/tcp.rs
++++ b/libs/hbb_common/src/tcp.rs
+@@ -3,7 +3,10 @@ use anyhow::Context as AnyhowCtx;
+ use bytes::{BufMut, Bytes, BytesMut};
+ use futures::{SinkExt, StreamExt};
+ use protobuf::Message;
+-use sodiumoxide::crypto::secretbox::{self, Key, Nonce};
++use sodiumoxide::crypto::{
++    box_,
++    secretbox::{self, Key, Nonce},
++};
+ use std::{
+     io::{self, Error, ErrorKind},
+     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+@@ -21,10 +24,13 @@ use tokio_util::codec::Framed;
+ pub trait TcpStreamTrait: AsyncRead + AsyncWrite + Unpin {}
+ pub struct DynTcpStream(Box<dyn TcpStreamTrait + Send + Sync>);
+ 
++#[derive(Clone)]
++pub struct Encrypt(Key, u64, u64);
++
+ pub struct FramedStream(
+     Framed<DynTcpStream, BytesCodec>,
+     SocketAddr,
+-    Option<(Key, u64, u64)>,
++    Option<Encrypt>,
+     u64,
+ );
+ 
+@@ -130,7 +136,7 @@ impl FramedStream {
+                     ms_timeout,
+                     Socks5Stream::connect_with_socket(stream, target),
+                 )
+-                .await??
++                    .await??
+             } else {
+                 super::timeout(
+                     ms_timeout,
+@@ -138,7 +144,7 @@ impl FramedStream {
+                         stream, target, username, password,
+                     ),
+                 )
+-                .await??
++                    .await??
+             };
+             let addr = stream.local_addr()?;
+             return Ok(Self(
+@@ -185,10 +191,10 @@ impl FramedStream {
+     #[inline]
+     pub async fn send_raw(&mut self, msg: Vec<u8>) -> ResultType<()> {
+         let mut msg = msg;
++        log::debug!("Send message: {:?}", msg);
+         if let Some(key) = self.2.as_mut() {
+-            key.1 += 1;
+-            let nonce = Self::get_nonce(key.1);
+-            msg = secretbox::seal(&msg, &nonce, &key.0);
++            log::debug!("Encrypting message");
++            msg = key.enc(&msg);
+         }
+         self.send_bytes(bytes::Bytes::from(msg)).await?;
+         Ok(())
+@@ -207,18 +213,10 @@ impl FramedStream {
+     #[inline]
+     pub async fn next(&mut self) -> Option<Result<BytesMut, Error>> {
+         let mut res = self.0.next().await;
+-        if let Some(key) = self.2.as_mut() {
+-            if let Some(Ok(bytes)) = res.as_mut() {
+-                key.2 += 1;
+-                let nonce = Self::get_nonce(key.2);
+-                match secretbox::open(bytes, &nonce, &key.0) {
+-                    Ok(res) => {
+-                        bytes.clear();
+-                        bytes.put_slice(&res);
+-                    }
+-                    Err(()) => {
+-                        return Some(Err(Error::new(ErrorKind::Other, "decryption error")));
+-                    }
++        if let Some(Ok(bytes)) = res.as_mut() {
++            if let Some(key) = self.2.as_mut() {
++                if let Err(err) = key.dec(bytes) {
++                    return Some(Err(err));
+                 }
+             }
+         }
+@@ -235,7 +233,7 @@ impl FramedStream {
+     }
+ 
+     pub fn set_key(&mut self, key: Key) {
+-        self.2 = Some((key, 0, 0));
++        self.2 = Some(Encrypt::new(key));
+     }
+ 
+     fn get_nonce(seqnum: u64) -> Nonce {
+@@ -274,6 +272,8 @@ pub async fn listen_any(port: u16, reuse: bool) -> ResultType<TcpListener> {
+         }
+         #[cfg(unix)]
+         {
++            socket.set_reuseport(true).ok();
++            socket.set_reuseaddr(true).ok();
+             use std::os::unix::io::{FromRawFd, IntoRawFd};
+             let raw_fd = socket.into_raw_fd();
+             let sock2 = unsafe { socket2::Socket::from_raw_fd(raw_fd) };
+@@ -297,9 +297,11 @@ pub async fn listen_any(port: u16, reuse: bool) -> ResultType<TcpListener> {
+             }
+         }
+     }
+-    let s = TcpSocket::new_v4()?;
+-    s.bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port))?;
+-    Ok(s.listen(DEFAULT_BACKLOG)?)
++    Ok(new_socket(
++        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port),
++        true,
++    )?
++        .listen(DEFAULT_BACKLOG)?)
+ }
+ 
+ impl Unpin for DynTcpStream {}
+@@ -333,3 +335,53 @@ impl AsyncWrite for DynTcpStream {
+ }
+ 
+ impl<R: AsyncRead + AsyncWrite + Unpin> TcpStreamTrait for R {}
++
++impl Encrypt {
++    pub fn new(key: Key) -> Self {
++        Self(key, 0, 0)
++    }
++
++    pub fn dec(&mut self, bytes: &mut bytes::BytesMut) -> Result<(), Error> {
++        if bytes.len() <= 1 {
++            return Ok(());
++        }
++        self.2 += 1;
++        let nonce = FramedStream::get_nonce(self.2);
++        match secretbox::open(bytes, &nonce, &self.0) {
++            Ok(res) => {
++                bytes.clear();
++                bytes.put_slice(&res);
++                Ok(())
++            }
++            Err(()) => Err(Error::new(ErrorKind::Other, "decryption error")),
++        }
++    }
++
++    pub fn enc(&mut self, data: &[u8]) -> Vec<u8> {
++        self.1 += 1;
++        let nonce = FramedStream::get_nonce(self.1);
++        secretbox::seal(&data, &nonce, &self.0)
++    }
++
++    pub fn decode(
++        symmetric_data: &[u8],
++        their_pk_b: &[u8],
++        our_sk_b: &box_::SecretKey,
++    ) -> ResultType<Key> {
++        if their_pk_b.len() != box_::PUBLICKEYBYTES {
++            anyhow::bail!("Handshake failed: pk length {}", their_pk_b.len());
++        }
++        let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
++        let mut pk_ = [0u8; box_::PUBLICKEYBYTES];
++        pk_[..].copy_from_slice(their_pk_b);
++        let their_pk_b = box_::PublicKey(pk_);
++        let symmetric_key = box_::open(symmetric_data, &nonce, &their_pk_b, &our_sk_b)
++            .map_err(|_| anyhow::anyhow!("Handshake failed: box decryption failure"))?;
++        if symmetric_key.len() != secretbox::KEYBYTES {
++            anyhow::bail!("Handshake failed: invalid secret key length from peer");
++        }
++        let mut key = [0u8; secretbox::KEYBYTES];
++        key[..].copy_from_slice(&symmetric_key);
++        Ok(Key(key))
++    }
++}
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 65c8022..1d13211 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -1,5 +1,6 @@
+ use crate::common::*;
+ use crate::peer::*;
++use hbb_common::bytes::BufMut;
+ use hbb_common::{
+     allow_err, bail,
+     bytes::{Bytes, BytesMut},
+@@ -13,9 +14,15 @@ use hbb_common::{
+     log,
+     protobuf::{Message as _, MessageField},
+     rendezvous_proto::{
+-        register_pk_response::Result::{TOO_FREQUENT, UUID_MISMATCH},
++        register_pk_response::Result::{INVALID_ID_FORMAT, TOO_FREQUENT, UUID_MISMATCH},
+         *,
+     },
++    sodiumoxide::crypto::{
++        box_, box_::PublicKey, box_::SecretKey, secretbox, secretbox::Key, secretbox::Nonce, sign,
++    },
++    sodiumoxide::hex,
++    tcp,
++    tcp::Encrypt,
+     tcp::{listen_any, FramedStream},
+     timeout,
+     tokio::{
+@@ -31,7 +38,7 @@ use hbb_common::{
+     AddrMangle, ResultType,
+ };
+ use ipnetwork::Ipv4Network;
+-use sodiumoxide::crypto::sign;
++
+ use std::{
+     collections::HashMap,
+     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+@@ -50,10 +57,14 @@ enum Data {
+ const REG_TIMEOUT: i32 = 30_000;
+ type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
+ type WsSink = SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tungstenite::Message>;
+-enum Sink {
++enum SinkType {
+     TcpStream(TcpStreamSink),
+     Ws(WsSink),
+ }
++struct Sink {
++    tx: SinkType,
++    key: Arc<Mutex<Option<Encrypt>>>,
++}
+ type Sender = mpsc::UnboundedSender<Data>;
+ type Receiver = mpsc::UnboundedReceiver<Data>;
+ static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
+@@ -69,6 +80,8 @@ struct Inner {
+     mask: Option<Ipv4Network>,
+     local_ip: String,
+     sk: Option<sign::SecretKey>,
++    secure_tcp_pk_b: PublicKey,
++    secure_tcp_sk_b: SecretKey,
+ }
+ 
+ #[derive(Clone)]
+@@ -119,6 +132,8 @@ impl RendezvousServer {
+                     .unwrap_or_default(),
+             )
+         };
++        // For privacy use per connection key pair
++        let (secure_tcp_pk_b, secure_tcp_sk_b) = box_::gen_keypair();
+         let mut rs = Self {
+             tcp_punch: Arc::new(Mutex::new(HashMap::new())),
+             pm,
+@@ -133,6 +148,8 @@ impl RendezvousServer {
+                 sk,
+                 mask,
+                 local_ip,
++                secure_tcp_pk_b,
++                secure_tcp_sk_b,
+             }),
+         };
+         log::info!("mask: {:?}", rs.inner.mask);
+@@ -554,6 +571,37 @@ impl RendezvousServer {
+                     });
+                     Self::send_to_sink(sink, msg_out).await;
+                 }
++                Some(rendezvous_message::Union::KeyExchange(ex)) => {
++                    log::trace!("KeyExchange {:?} <- bytes: {:?}", addr, hex::encode(&bytes));
++                    if ex.keys.len() != 2 {
++                        log::error!("Handshake failed: invalid phase 2 key exchange message");
++                        return false;
++                    }
++                    log::trace!("KeyExchange their_pk: {:?}", hex::encode(&ex.keys[0]));
++                    log::trace!("KeyExchange box: {:?}", hex::encode(&ex.keys[1]));
++                    let their_pk: [u8; 32] = ex.keys[0].to_vec().try_into().unwrap();
++                    let cryptobox: [u8; 48] = ex.keys[1].to_vec().try_into().unwrap();
++                    let symetric_key = get_symetric_key_from_msg(
++                        self.inner.secure_tcp_sk_b.0,
++                        their_pk,
++                        &cryptobox,
++                    );
++                    log::debug!("KeyExchange symetric key: {:?}", hex::encode(&symetric_key));
++                    let key = secretbox::Key::from_slice(&symetric_key);
++                    match key {
++                        Some(key) => {
++                            if let Some(sink) = sink.as_mut() {
++                                sink.key.lock().await.replace(Encrypt::new(key));
++                            }
++                            log::debug!("KeyExchange symetric key set");
++                            return true;
++                        }
++                        None => {
++                            log::error!("KeyExchange symetric key NOT set");
++                            return false;
++                        }
++                    }
++                }
+                 _ => {}
+             }
+         }
+@@ -803,12 +851,15 @@ impl RendezvousServer {
+     #[inline]
+     async fn send_to_sink(sink: &mut Option<Sink>, msg: RendezvousMessage) {
+         if let Some(sink) = sink.as_mut() {
+-            if let Ok(bytes) = msg.write_to_bytes() {
+-                match sink {
+-                    Sink::TcpStream(s) => {
++            if let Ok(mut bytes) = msg.write_to_bytes() {
++                if let Some(enc) = &mut sink.key.lock().await.as_mut() {
++                    bytes = enc.enc(&bytes);
++                }
++                match &mut sink.tx {
++                    SinkType::TcpStream(s) => {
+                         allow_err!(s.send(Bytes::from(bytes)).await);
+                     }
+-                    Sink::Ws(ws) => {
++                    SinkType::Ws(ws) => {
+                         allow_err!(ws.send(tungstenite::Message::Binary(bytes)).await);
+                     }
+                 }
+@@ -1130,7 +1181,10 @@ impl RendezvousServer {
+             };
+             let ws_stream = tokio_tungstenite::accept_hdr_async(stream, callback).await?;
+             let (a, mut b) = ws_stream.split();
+-            sink = Some(Sink::Ws(a));
++            sink = Some(Sink {
++                tx: SinkType::Ws(a),
++                key: Arc::new(Mutex::new(None)),
++            });
+             while let Ok(Some(Ok(msg))) = timeout(30_000, b.next()).await {
+                 if let tungstenite::Message::Binary(bytes) = msg {
+                     if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+@@ -1140,8 +1194,23 @@ impl RendezvousServer {
+             }
+         } else {
+             let (a, mut b) = Framed::new(stream, BytesCodec::new()).split();
+-            sink = Some(Sink::TcpStream(a));
+-            while let Ok(Some(Ok(bytes))) = timeout(30_000, b.next()).await {
++            let enc = Arc::new(Mutex::new(None));
++            sink = Some(Sink {
++                tx: SinkType::TcpStream(a),
++                key: enc.clone(),
++            });
++            // Avoid key exchange if answering on nat helper port
++            if !key.is_empty() {
++                self.key_exchange_phase1(addr, &mut sink).await;
++            }
++            while let Ok(Some(Ok(mut bytes))) = timeout(30_000, b.next()).await {
++                let mut enc_lock = enc.lock().await;
++                if enc_lock.is_some() {
++                    if let Err(err) = enc_lock.as_mut().unwrap().dec(&mut bytes) {
++                        return Err(err.into());
++                    }
++                }
++                drop(enc_lock);
+                 if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+                     break;
+                 }
+@@ -1224,6 +1293,31 @@ impl RendezvousServer {
+         }
+         false
+     }
++
++    async fn key_exchange_phase1(&mut self, addr: SocketAddr, sink: &mut Option<Sink>) {
++        let mut msg_out = RendezvousMessage::new();
++        log::debug!("KeyExchange phase 1: send our pk for this tcp connection in a message signed with our server key");
++        let sk = &self.inner.sk;
++        match sk {
++            Some(sk) => {
++                let our_pk_b = self.inner.secure_tcp_pk_b.clone();
++                let sm = sign::sign(&our_pk_b.0, &sk);
++
++                let bytes_sm = Bytes::from(sm);
++                msg_out.set_key_exchange(KeyExchange {
++                    keys: vec![bytes_sm],
++                    ..Default::default()
++                });
++                log::trace!(
++                    "KeyExchange {:?} -> bytes: {:?}",
++                    addr,
++                    hex::encode(Bytes::from(msg_out.write_to_bytes().unwrap()))
++                );
++                Self::send_to_sink(sink, msg_out).await;
++            }
++            None => {}
++        }
++    }
+ }
+ 
+ async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
+@@ -1323,3 +1417,22 @@ async fn create_tcp_listener(port: i32) -> ResultType<TcpListener> {
+     log::debug!("listen on tcp {:?}", s.local_addr());
+     Ok(s)
+ }
++
++fn get_symetric_key_from_msg(
++    our_sk_b: [u8; 32],
++    their_pk_b: [u8; 32],
++    sealed_value: &[u8; 48],
++) -> [u8; 32] {
++    let their_pk_b = box_::PublicKey(their_pk_b);
++    let nonce = box_::Nonce([0u8; box_::NONCEBYTES]);
++    let sk = box_::SecretKey(our_sk_b);
++    let key = box_::open(sealed_value, &nonce, &their_pk_b, &sk);
++    match key {
++        Ok(key) => {
++            let mut key_array = [0u8; 32];
++            key_array.copy_from_slice(&key);
++            key_array
++        }
++        Err(e) => panic!("Error while opening the seal key{:?}", e),
++    }
++}
+-- 
+2.54.0 (Apple Git-157)
+

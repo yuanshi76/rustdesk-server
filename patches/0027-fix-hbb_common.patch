@@ -1,0 +1,23 @@
+From 95b18ee1a4c5de9111a3fc30159ce02b8cb58e9d Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 31 Aug 2025 16:14:02 +0800
+Subject: [PATCH 27/32] =?UTF-8?q?fix:=20=E4=BF=AE=E5=A4=8Dhbb=5Fcommon?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ libs/hbb_common | 1 +
+ 1 file changed, 1 insertion(+)
+ create mode 160000 libs/hbb_common
+
+diff --git a/libs/hbb_common b/libs/hbb_common
+new file mode 160000
+index 0000000..d6b1497
+--- /dev/null
++++ b/libs/hbb_common
+@@ -0,0 +1 @@
++Subproject commit d6b14975ffd35ed63528617a53795c479a6eaf13
+-- 
+2.54.0 (Apple Git-157)
+

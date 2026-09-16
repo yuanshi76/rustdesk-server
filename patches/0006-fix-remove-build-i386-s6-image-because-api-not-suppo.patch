@@ -1,0 +1,53 @@
+From 14198e7586c58b9ec47b2505404e11abc7189da7 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 12 Jan 2025 14:13:17 +0800
+Subject: [PATCH 06/32] fix: remove build i386 s6 image because api not support
+ i386
+
+---
+ .github/workflows/ghcr.yml | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/.github/workflows/ghcr.yml b/.github/workflows/ghcr.yml
+index bd5f0a9..13be83e 100644
+--- a/.github/workflows/ghcr.yml
++++ b/.github/workflows/ghcr.yml
+@@ -184,7 +184,7 @@ jobs:
+             ghcr.io/${{ github.repository }}-s6:${{ env.MAJOR_TAG }}-amd64,
+             ghcr.io/${{ github.repository }}-s6:${{ env.MAJOR_TAG }}-arm64v8,
+             ghcr.io/${{ github.repository }}-s6:${{ env.MAJOR_TAG }}-armv7,
+-            ghcr.io/${{ github.repository }}-s6:${{ env.MAJOR_TAG }}-i386
++#            ghcr.io/${{ github.repository }}-s6:${{ env.MAJOR_TAG }}-i386
+           push: true
+ 
+       # Create and push manifest for :latest tag
+@@ -196,7 +196,7 @@ jobs:
+             ghcr.io/${{ github.repository }}-s6:${{ env.LATEST_TAG }}-amd64,
+             ghcr.io/${{ github.repository }}-s6:${{ env.LATEST_TAG }}-arm64v8,
+             ghcr.io/${{ github.repository }}-s6:${{ env.LATEST_TAG }}-armv7,
+-            ghcr.io/${{ github.repository }}-s6:${{ env.LATEST_TAG }}-i386
++#            ghcr.io/${{ github.repository }}-s6:${{ env.LATEST_TAG }}-i386
+           push: true
+ 
+   # Build and push single-arch Docker images to ghcr.io
+@@ -229,7 +229,7 @@ jobs:
+ 
+       - name: Set up QEMU
+         uses: docker/setup-qemu-action@v3
+-      
++
+       - name: Set up Docker Buildx
+         uses: docker/setup-buildx-action@v3
+ 
+@@ -240,7 +240,7 @@ jobs:
+           registry: ghcr.io
+           username: ${{ github.actor }}
+           password: ${{ secrets.GITHUB_TOKEN }}
+-        
++
+       - name: Extract metadata (tags, labels) for Docker
+         id: meta
+         uses: docker/metadata-action@v5
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,91 @@
+From c72e0dc3e1794e72225c684757807fb56e702940 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 12 Jan 2025 20:10:12 +0800
+Subject: [PATCH 11/32] docs: Up Readme
+
+---
+ README.md          |  2 ++
+ docker-compose.yml | 39 ++++++++++++++++-----------------------
+ 2 files changed, 18 insertions(+), 23 deletions(-)
+
+diff --git a/README.md b/README.md
+index eb553ac..1ca139d 100644
+--- a/README.md
++++ b/README.md
+@@ -7,6 +7,7 @@
+ 
+ - 解决当客户端登录了`Api`账号时链接超时的问题
+ - s6镜像添加了`Api`支持，`Api`开源地址 https://github.com/lejianwen/rustdesk-api
++- 是否必须登录才能链接， `MUST_LOGIN` 默认为 `N`，设置为 `Y` 则必须登录才能链接
+ 
+ ## docker镜像地址
+ 
+@@ -30,6 +31,7 @@
+      environment:
+        - RELAY=<relay_server[:port]>
+        - ENCRYPTED_ONLY=1
++       - MUST_LOGIN=N
+        - TZ=Asia/Shanghai
+        - RUSTDESK_API_RUSTDESK_ID_SERVER=<id_server[:21116]>
+        - RUSTDESK_API_RUSTDESK_RELAY_SERVER=<relay_server[:21117]>
+diff --git a/docker-compose.yml b/docker-compose.yml
+index fab6e03..11608f8 100644
+--- a/docker-compose.yml
++++ b/docker-compose.yml
+@@ -1,36 +1,29 @@
+-version: '3'
+-
+ networks:
+   rustdesk-net:
+     external: false
+-
+ services:
+-  hbbs:
+-    container_name: hbbs
++  rustdesk:
+     ports:
++      - 21114:21114
+       - 21115:21115
+       - 21116:21116
+       - 21116:21116/udp
+-      - 21118:21118
+-    image: rustdesk/rustdesk-server:latest
+-    command: hbbs -r rustdesk.example.com:21117
+-    volumes:
+-      - ./data:/root
+-    networks:
+-      - rustdesk-net
+-    depends_on:
+-      - hbbr
+-    restart: unless-stopped
+-
+-  hbbr:
+-    container_name: hbbr
+-    ports:
+       - 21117:21117
++      - 21118:21118
+       - 21119:21119
+-    image: rustdesk/rustdesk-server:latest
+-    command: hbbr
++    image: lejianwen/rustdesk-server-s6:latest
++    environment:
++      - RELAY=<relay_server[:port]>
++      - ENCRYPTED_ONLY=1
++      - MUST_LOGIN=N
++      - TZ=Asia/Shanghai
++      - RUSTDESK_API_RUSTDESK_ID_SERVER=<id_server[:21116]>
++      - RUSTDESK_API_RUSTDESK_RELAY_SERVER=<relay_server[:21117]>
++      - RUSTDESK_API_RUSTDESK_API_SERVER=http://<api_server[:21114]>
+     volumes:
+-      - ./data:/root
++      - /data/rustdesk/server:/data
++      - /data/rustdesk/api:/app/data #将数据库挂载
++      - /data/rustdesk/server:/app/conf/data #挂载key文件到api容器，可以不用使用 RUSTDESK_API_RUSTDESK_KEY
+     networks:
+       - rustdesk-net
+-    restart: unless-stopped
++    restart: unless-stopped
+\ No newline at end of file
+-- 
+2.54.0 (Apple Git-157)
+

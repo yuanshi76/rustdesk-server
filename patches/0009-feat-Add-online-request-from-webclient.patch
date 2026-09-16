@@ -1,0 +1,44 @@
+From e5ac30e2bcccc007d2f7eeee99d5dc82f4eae5a8 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 12 Jan 2025 19:32:31 +0800
+Subject: [PATCH 09/32] feat: Add online request from webclient
+
+---
+ src/rendezvous_server.rs | 21 +++++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 1d13211..b43f165 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -602,6 +602,27 @@ impl RendezvousServer {
+                         }
+                     }
+                 }
++                Some(rendezvous_message::Union::OnlineRequest(or)) => {
++                    let mut states = BytesMut::zeroed((or.peers.len() + 7) / 8);
++                    for (i, peer_id) in or.peers.iter().enumerate() {
++                        if let Some(peer) = self.pm.get_in_memory(peer_id).await {
++                            let elapsed = peer.read().await.last_reg_time.elapsed().as_millis() as i32;
++                            // bytes index from left to right
++                            let states_idx = i / 8;
++                            let bit_idx = 7 - i % 8;
++                            if elapsed < REG_TIMEOUT {
++                                states[states_idx] |= 0x01 << bit_idx;
++                            }
++                        }
++                    }
++
++                    let mut msg_out = RendezvousMessage::new();
++                    msg_out.set_online_response(OnlineResponse {
++                        states: states.into(),
++                        ..Default::default()
++                    });
++                    Self::send_to_sink(sink, msg_out).await;
++                }
+                 _ => {}
+             }
+         }
+-- 
+2.54.0 (Apple Git-157)
+
