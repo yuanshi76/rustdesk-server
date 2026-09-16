@@ -48,6 +48,9 @@ in the inherited process environment.
 | `ALWAYS_USE_RELAY` 🅴 | *(none)* | `N` | `Y` forces every session through a relay (disables direct/hole‑punched connections). At runtime, send `always-use-relay Y` or `always-use-relay N` to the `hbbs` [loopback console](#runtime-console). |
 | `DB_URL` 🅴 | *(none)* | `./db_v2.sqlite3` | Path/URL of the SQLite database file. See [Database](#database). |
 | `MAX_DATABASE_CONNECTIONS` 🅴 | *(none)* | `1` | Size of the SQLite connection pool. |
+| `MUST_LOGIN` 🅴 | `--must-login` | `N` | **Fork feature.** `Y` refuses a connection request that carries no login token. Set `RUSTDESK_API_JWT_KEY` as well to have the token verified rather than merely required. At runtime, send `must-login Y` or `must-login N` to the `hbbs` [loopback console](#runtime-console). |
+| `RUSTDESK_API_JWT_KEY` 🅴 | *(none)* | *(empty)* | **Fork feature.** Shared HS256 secret used to verify the login token, the same value the companion [rustdesk-api](https://github.com/lejianwen/rustdesk-api) server signs with. Read once, at first use. With `MUST_LOGIN=Y` and this unset, any non-empty token is accepted. |
+| `WS_IDLE_TIMEOUT` 🅴 | `--ws-idle-timeout` | `90` | **Fork feature.** Seconds a websocket may go without a single inbound frame - including the Pong answering the server's Ping - before `hbbs` closes it. A backstop against a peer that vanishes without sending FIN. Send `ws-peers` to the console to see how many websocket peers are currently registered. |
 
 🅴 = set through the inherited process environment.
 
@@ -108,6 +111,9 @@ connection from a loopback address is treated as a single console command:
 ```bash
 # hbbs: toggle forced relay on PORT-1 (21115 by default)
 printf 'always-use-relay Y' | nc 127.0.0.1 21115
+
+# hbbs: how many websocket peers are registered right now
+printf 'ws-peers' | nc 127.0.0.1 21115
 
 # hbbr: list commands on its relay PORT (21117 by default)
 printf 'h' | nc 127.0.0.1 21117
