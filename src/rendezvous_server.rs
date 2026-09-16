@@ -1581,6 +1581,9 @@ impl RendezvousServer {
             };
 
             let idle_timeout_ms = WS_IDLE_TIMEOUT_MS.load(Ordering::SeqCst);
+            // Also the granularity of the idle check, so a short configured
+            // timeout is honoured at roughly the resolution it asks for.
+            let poll_ms = WS_PING_INTERVAL_MS.min(idle_timeout_ms);
             let mut last_seen = Instant::now();
             loop {
                 tokio::select! {
@@ -1590,7 +1593,7 @@ impl RendezvousServer {
                             None => break,
                         }
                     }
-                    incoming = timeout(WS_PING_INTERVAL_MS, b.next()) => {
+                    incoming = timeout(poll_ms, b.next()) => {
                         match incoming {
                             Ok(Some(Ok(msg))) => {
                                 last_seen = Instant::now();
