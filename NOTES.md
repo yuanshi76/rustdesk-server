@@ -389,3 +389,8 @@ it is not the same evidence, and it should not be reported as if it were.
    them alone would have shipped a defect: the JWT secret is no longer printed
    to stdout, the KeyExchange handler no longer panics on remote input, and
    `RequestRelay` is routed to websocket peers.
+5. One dependency was added that this crate's code does not use: `openssl` with
+   the `vendored` feature. `hbb_common` at `69cea8d` pulls `native-tls`, and
+   cross's musl images ship no OpenSSL for the target, so without it the CI
+   cross-builds do not compile at all. See the commit message for the two
+   independent confirmations.
