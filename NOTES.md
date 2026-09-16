@@ -290,9 +290,53 @@ accept, handle and close path, which is what is being measured.
 
 ### Soak
 
-`tests/ws_soak.rs` runs the release `hbbs` as a child process under five
-clients' worth of connect/heartbeat/close churn and samples the child's RSS and
-descriptor count. Results are in the "Soak results" section below.
+`tests/ws_soak.rs` runs the release `hbbs` as a child process under websocket
+churn and samples the child's RSS and descriptor count.
+
+**The first version of this test passed against the leaking build**, which makes
+it worthless, and it is worth recording why because both mistakes are easy to
+repeat:
+
+1. It registered a public key only on the first connection and heartbeated after
+   that. The fork stashes the write half on a successful `RegisterPk` and
+   nowhere else, so a heartbeat-only soak never touches the leaking path.
+2. It reused one source address per client. The registry is keyed by address, so
+   each registration *replaced* the previous entry and dropped the sink it was
+   holding — the leak hid behind its own bookkeeping. In production every
+   reconnect arrives from a fresh ephemeral port, so every connection is a
+   distinct key and nothing is ever freed. This is also why the production
+   census showed 2327 `CLOSE_WAIT` entries from only five client IPs: distinct
+   ports, distinct keys.
+
+Both were caught by running the soak against `fork/forapi` and seeing it pass.
+Corrected, it registers on every connection from a distinct source address, at a
+reconnect interval above the six seconds that the `RegisterPk` rate limiter
+allows.
+
+Two minutes, ten clients, 170 connections:
+
+| Build | Descriptors | RSS |
+|---|---|---|
+| `fork/forapi` | 56 → 196 | 15488 → 17568 kB |
+| this build | 25 → 25 | 15232 → 15296 kB |
+
+The fork's curve is the production sawtooth, about 25× faster because the churn
+is about 25× faster.
+
+### Upstream-watch rebase, simulated
+
+The watcher's core mechanic was exercised locally rather than trusted: a
+synthetic upstream release was built by committing a change to
+`src/rendezvous_server.rs` on top of `a7736be` and tagging it `1.1.17-sim`, then
+
+```
+git rebase --onto 1.1.17-sim $UPSTREAM_COMMIT sim-sync
+```
+
+replayed all 17 fork commits cleanly, with the synthetic upstream commit
+preserved in the history below them. The workflow around it — the GitHub API
+call, the PR, the issue on conflict — has not been executed, because that needs
+a GitHub repository to run in.
 
 ---
 
@@ -306,6 +350,7 @@ descriptor count. Results are in the "Soak results" section below.
 | `tests/ws_idle.rs` | A silent websocket is closed rather than held forever. |
 | `tests/must_login.rs` | `MUST_LOGIN=Y` refuses no token, a non-JWT token, and a token signed with the wrong secret; lets a valid one through. |
 | `tests/jwt_tests.rs` | Bad signature, expiry and garbage are rejected. |
+| `tests/key_exchange.rs` | The two-phase encrypted TCP rendezvous: phase 1 is signed by the server key, a tampered signature does not verify, and a message encrypted with the sealed symmetric key round-trips. Also four malformed phase 2 messages, each of which reached a `panic!` or an `unwrap()` in the fork's version. |
 | `tests/smoke.rs` | Key generation and validation, the four expected listeners, and both halves of the rendezvous handshake - direct punch hole and relay - end to end over websockets against a real `hbbs` and `hbbr`. |
 
 What the smoke test does **not** cover: a real RustDesk client establishing a
