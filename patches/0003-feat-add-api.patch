@@ -1,0 +1,72 @@
+From a2b4e8e4a510f661ee933424bfb8239d65cae81a Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sat, 11 Jan 2025 22:51:33 +0800
+Subject: [PATCH 03/32] feat: add api
+
+---
+ docker/Dockerfile                                        | 5 +++--
+ docker/rootfs/etc/s6-overlay/s6-rc.d/api/dependencies    | 2 ++
+ docker/rootfs/etc/s6-overlay/s6-rc.d/api/run             | 4 ++++
+ docker/rootfs/etc/s6-overlay/s6-rc.d/api/type            | 1 +
+ docker/rootfs/etc/s6-overlay/s6-rc.d/user/contents.d/api | 0
+ 5 files changed, 10 insertions(+), 2 deletions(-)
+ create mode 100644 docker/rootfs/etc/s6-overlay/s6-rc.d/api/dependencies
+ create mode 100644 docker/rootfs/etc/s6-overlay/s6-rc.d/api/run
+ create mode 100644 docker/rootfs/etc/s6-overlay/s6-rc.d/api/type
+ create mode 100644 docker/rootfs/etc/s6-overlay/s6-rc.d/user/contents.d/api
+
+diff --git a/docker/Dockerfile b/docker/Dockerfile
+index a8a2130..0ef5bb7 100755
+--- a/docker/Dockerfile
++++ b/docker/Dockerfile
+@@ -1,4 +1,4 @@
+-FROM busybox:stable
++FROM lejianwen/rustdesk-api:latest
+ 
+ ARG S6_OVERLAY_VERSION=3.2.0.0
+ ARG S6_ARCH=x86_64
+@@ -15,11 +15,12 @@ COPY rootfs /
+ ENV RELAY=relay.example.com
+ ENV ENCRYPTED_ONLY=0
+ 
+-EXPOSE 21115 21116 21116/udp 21117 21118 21119
++EXPOSE 21114 21115 21116 21116/udp 21117 21118 21119
+ 
+ HEALTHCHECK --interval=10s --timeout=5s CMD /usr/bin/healthcheck.sh
+ 
+ WORKDIR /data
++VOLUME /app/data
+ 
+ VOLUME /data
+ 
+diff --git a/docker/rootfs/etc/s6-overlay/s6-rc.d/api/dependencies b/docker/rootfs/etc/s6-overlay/s6-rc.d/api/dependencies
+new file mode 100644
+index 0000000..f8e8634
+--- /dev/null
++++ b/docker/rootfs/etc/s6-overlay/s6-rc.d/api/dependencies
+@@ -0,0 +1,2 @@
++key-secret
++hbbs
+diff --git a/docker/rootfs/etc/s6-overlay/s6-rc.d/api/run b/docker/rootfs/etc/s6-overlay/s6-rc.d/api/run
+new file mode 100644
+index 0000000..97e51bf
+--- /dev/null
++++ b/docker/rootfs/etc/s6-overlay/s6-rc.d/api/run
+@@ -0,0 +1,4 @@
++#!/command/with-contenv sh
++sleep 3
++cd /app
++./apimain
+diff --git a/docker/rootfs/etc/s6-overlay/s6-rc.d/api/type b/docker/rootfs/etc/s6-overlay/s6-rc.d/api/type
+new file mode 100644
+index 0000000..5883cff
+--- /dev/null
++++ b/docker/rootfs/etc/s6-overlay/s6-rc.d/api/type
+@@ -0,0 +1 @@
++longrun
+diff --git a/docker/rootfs/etc/s6-overlay/s6-rc.d/user/contents.d/api b/docker/rootfs/etc/s6-overlay/s6-rc.d/user/contents.d/api
+new file mode 100644
+index 0000000..e69de29
+-- 
+2.54.0 (Apple Git-157)
+

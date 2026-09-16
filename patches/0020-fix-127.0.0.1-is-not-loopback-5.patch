@@ -1,0 +1,26 @@
+From 09ff39cc82f8b4faad319a1fed1ea9b6443302f4 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E4=B9=90?= <84855512@qq.com>
+Date: Thu, 6 Feb 2025 20:03:29 +0800
+Subject: [PATCH 20/32] fix: 127.0.0.1 is not loopback (#5)
+
+---
+ src/rendezvous_server.rs | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 33bb899..6f8d7e5 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -1181,7 +1181,8 @@ impl RendezvousServer {
+ 
+     async fn handle_listener2(&self, stream: TcpStream, addr: SocketAddr) {
+         let mut rs = self.clone();
+-        if addr.ip().is_loopback() {
++        let ip = try_into_v4(addr).ip();
++        if ip.is_loopback() {
+             tokio::spawn(async move {
+                 let mut stream = stream;
+                 let mut buffer = [0; 1024];
+-- 
+2.54.0 (Apple Git-157)
+

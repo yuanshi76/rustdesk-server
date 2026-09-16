@@ -1,0 +1,188 @@
+From b5e0484d03297c4a8dd4dfe525e16c33be03e3d0 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Mon, 1 Sep 2025 00:20:02 +0800
+Subject: [PATCH 29/32] fix
+
+---
+ src/rendezvous_server.rs | 81 ++++++++++++++--------------------------
+ 1 file changed, 27 insertions(+), 54 deletions(-)
+
+diff --git a/src/rendezvous_server.rs b/src/rendezvous_server.rs
+index 84569d1..fb5105d 100644
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -39,6 +39,8 @@ use hbb_common::{
+ };
+ use ipnetwork::Ipv4Network;
+ 
++use crate::jwt;
++use std::io::Error;
+ use std::{
+     collections::HashMap,
+     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+@@ -46,7 +48,6 @@ use std::{
+     sync::Arc,
+     time::Instant,
+ };
+-use crate::jwt;
+ 
+ #[derive(Clone, Debug)]
+ enum Data {
+@@ -62,6 +63,7 @@ struct SafeWsSink {
+     sink: WsSink,
+     encrypt: Option<Encrypt>,
+ }
++
+ struct SafeTcpStreamSink {
+     sink: TcpStreamSink,
+     encrypt: Option<Encrypt>,
+@@ -124,7 +126,7 @@ pub struct RendezvousServer {
+     relay_servers0: Arc<RelayServers>,
+     rendezvous_servers: Arc<Vec<String>>,
+     inner: Arc<Inner>,
+-    ws_map: Arc<Mutex<HashMap<SocketAddr, Sink>>>
++    ws_map: Arc<Mutex<HashMap<SocketAddr, Sink>>>,
+ }
+ 
+ enum LoopFailure {
+@@ -183,7 +185,7 @@ impl RendezvousServer {
+                 secure_tcp_pk_b,
+                 secure_tcp_sk_b,
+             }),
+-            ws_map: Arc::new(Mutex::new(HashMap::new()))
++            ws_map: Arc::new(Mutex::new(HashMap::new())),
+         };
+         log::info!("mask: {:?}", rs.inner.mask);
+         log::info!("local-ip: {:?}", rs.inner.local_ip);
+@@ -211,11 +213,13 @@ impl RendezvousServer {
+ 
+         let must_login = get_arg("must-login");
+         log::debug!("must_login={}", must_login);
+-        if must_login.to_uppercase() == "Y" ||
+-            (must_login == "" && std::env::var("MUST_LOGIN")
+-            .unwrap_or_default()
+-            .to_uppercase()
+-            == "Y") {
++        if must_login.to_uppercase() == "Y"
++            || (must_login == ""
++                && std::env::var("MUST_LOGIN")
++                    .unwrap_or_default()
++                    .to_uppercase()
++                    == "Y")
++        {
+             MUST_LOGIN.store(true, Ordering::SeqCst);
+         }
+ 
+@@ -498,7 +502,7 @@ impl RendezvousServer {
+                     // B registered
+                     if !rp.id.is_empty() {
+                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
+-                        let request_pk =  self.update_addr(rp.id, addr).await;
++                        let request_pk = self.update_addr(rp.id, addr).await;
+                         let mut msg_out = RendezvousMessage::new();
+                         msg_out.set_register_peer_response(RegisterPeerResponse {
+                             request_pk,
+@@ -772,11 +776,7 @@ impl RendezvousServer {
+     }
+ 
+     #[inline]
+-    async fn update_addr(
+-        &mut self,
+-        id: String,
+-        socket_addr: SocketAddr,
+-    ) -> bool {
++    async fn update_addr(&mut self, id: String, socket_addr: SocketAddr) -> bool {
+         let (request_pk, ip_change) = if let Some(old) = self.pm.get_in_memory(&id).await {
+             let mut old = old.write().await;
+             let ip = socket_addr.ip();
+@@ -888,7 +888,7 @@ impl RendezvousServer {
+         ph: PunchHoleRequest,
+         key: &str,
+         ws: bool,
+-    ) -> ResultType<(RendezvousMessage, Option<(SocketAddr)>)> {
++    ) -> ResultType<(RendezvousMessage, Option<SocketAddr>)> {
+         let mut ph = ph;
+         if !key.is_empty() && ph.licence_key != key {
+             let mut msg_out = RendezvousMessage::new();
+@@ -987,7 +987,7 @@ impl RendezvousServer {
+                 });
+             }
+             //
+-            Ok((msg_out, Some((peer_addr))))
++            Ok((msg_out, Some(peer_addr)))
+         } else {
+             let mut msg_out = RendezvousMessage::new();
+             msg_out.set_punch_hole_response(PunchHoleResponse {
+@@ -1064,38 +1064,6 @@ impl RendezvousServer {
+         Ok(())
+     }
+ 
+-    /**
+-    async fn handle_tcp_punch_hole_request(
+-        &mut self,
+-        addr: SocketAddr,
+-        ph: PunchHoleRequest,
+-        key: &str,
+-        ws: bool,
+-    ) -> ResultType<()> {
+-        let (msg, to_addr) = self.handle_punch_hole_request(addr, ph, key, ws).await?;
+-        log::debug!(
+-            "handle_tcp_punch_hole_request: {:?} to {:?}",
+-            &msg, &to_addr
+-        );
+-        //
+-
+-        if let Some(addr) = to_addr {
+-            // self.send_to_tcp_sync(msg, addr).await?;
+-            //这里无法判断目标addr是否是ws，请求无法发送到目标peer
+-            if self.tcp_punch.lock().await.contains_key(&try_into_v4(addr)) {
+-                self.send_to_tcp_sync(msg, addr).await?; //这里如果client使用ws,可以，但如果不用ws就必须用下面的，怎么判断呢
+-                //这样判断还是不行，如果client从ws切换回udp，tcp_punch中还是有残留，会导致发送失败，应该做个新的hashmap存？？
+-            } else {
+-                self.tx.send(Data::Msg(msg.into(), addr))?;
+-            }
+-            // self.tx.send(Data::Msg(msg.into(), addr))?;
+-
+-        } else {
+-            self.send_to_tcp_sync(msg, addr).await?;
+-        }
+-        Ok(())
+-    }**/
+-
+     #[inline]
+     async fn handle_udp_punch_hole_request(
+         &mut self,
+@@ -1310,11 +1278,7 @@ impl RendezvousServer {
+                         MUST_LOGIN.store(false, Ordering::SeqCst);
+                     }
+                 } else {
+-                    let _ = writeln!(
+-                        res,
+-                        "MUST_LOGIN: {:?}",
+-                        MUST_LOGIN.load(Ordering::SeqCst)
+-                    );
++                    let _ = writeln!(res, "MUST_LOGIN: {:?}", MUST_LOGIN.load(Ordering::SeqCst));
+                 }
+             }
+             _ => {}
+@@ -1420,7 +1384,16 @@ impl RendezvousServer {
+             if !key.is_empty() {
+                 self.key_exchange_phase1(addr, &mut sink).await;
+             }
+-            while let Ok(Some(Ok(bytes))) = timeout(30_000, b.next()).await {
++            while let Ok(Some(Ok(mut bytes))) = timeout(30_000, b.next()).await {
++                // log::debug!("receive tcp data from {:?} {:?}", addr, bytes);
++                if let Some(Sink::Tss(s)) = sink.as_mut() {
++                    if let Some(key) = s.encrypt.as_mut() {
++                        if let Err(err) = key.dec(&mut bytes) {
++                            log::error!("dec tcp data from {:?} err: {:?}", addr, err);
++                            break;
++                        }
++                    }
++                }
+                 if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+                     break;
+                 }
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,29 @@
+From 9416a98e48752cd1a6d830d8a32e9afd7b36aee9 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Wed, 15 Jan 2025 20:28:42 +0800
+Subject: [PATCH 15/32] docs: up readme
+
+---
+ README.md | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/README.md b/README.md
+index 05d36c6..41c00fc 100644
+--- a/README.md
++++ b/README.md
+@@ -37,10 +37,11 @@
+        - RUSTDESK_API_RUSTDESK_ID_SERVER=<id_server[:21116]>
+        - RUSTDESK_API_RUSTDESK_RELAY_SERVER=<relay_server[:21117]>
+        - RUSTDESK_API_RUSTDESK_API_SERVER=http://<api_server[:21114]>
++       - RUSTDESK_API_KEY_FILE=/data/id_ed25519.pub
++       - RUSTDESK_API_JWT_KEY=xxxxxx # jwt key
+      volumes:
+        - /data/rustdesk/server:/data
+        - /data/rustdesk/api:/app/data #将数据库挂载
+-       - /data/rustdesk/server:/app/conf/data #挂载key文件到api容器，可以不用使用 RUSTDESK_API_RUSTDESK_KEY
+      networks:
+        - rustdesk-net
+      restart: unless-stopped
+-- 
+2.54.0 (Apple Git-157)
+

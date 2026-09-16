@@ -1,0 +1,37 @@
+From fb8b5b9cf494d045f0feb370d83913b1a7506388 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Mon, 1 Sep 2025 08:35:33 +0800
+Subject: [PATCH 32/32] chore: git version tag
+
+---
+ .github/workflows/build-test.yaml | 1 -
+ .github/workflows/build.yaml      | 1 -
+ 2 files changed, 2 deletions(-)
+
+diff --git a/.github/workflows/build-test.yaml b/.github/workflows/build-test.yaml
+index 198e4a9..8b42c45 100644
+--- a/.github/workflows/build-test.yaml
++++ b/.github/workflows/build-test.yaml
+@@ -171,7 +171,6 @@ jobs:
+       #  this has to run only if invoked by a new tag
+       - name: Create and push manifest (:ve.rs.ion)
+         uses: Noelware/docker-manifest-action@master
+-        if: github.event_name != 'workflow_dispatch'
+         with:
+           tags: ${{ secrets.DOCKER_IMAGE }}:${{ env.GIT_TAG }}
+           inputs: |
+diff --git a/.github/workflows/build.yaml b/.github/workflows/build.yaml
+index 54ec802..73a1908 100644
+--- a/.github/workflows/build.yaml
++++ b/.github/workflows/build.yaml
+@@ -308,7 +308,6 @@ jobs:
+       #  this has to run only if invoked by a new tag
+       - name: Create and push manifest (:ve.rs.ion)
+         uses: Noelware/docker-manifest-action@master
+-        if: github.event_name != 'workflow_dispatch'
+         with:
+           tags: ${{ secrets.DOCKER_IMAGE }}:${{ env.GIT_TAG }}
+           inputs: |
+-- 
+2.54.0 (Apple Git-157)
+

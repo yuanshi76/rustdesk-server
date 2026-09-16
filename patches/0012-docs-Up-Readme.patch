@@ -1,0 +1,33 @@
+From ec534abc5e7664f448cb755b58ea915f00b1cae5 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Sun, 12 Jan 2025 20:14:07 +0800
+Subject: [PATCH 12/32] docs: Up Readme
+
+---
+ README.md | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/README.md b/README.md
+index 1ca139d..d71641c 100644
+--- a/README.md
++++ b/README.md
+@@ -48,8 +48,16 @@
+ 
+ - 普通镜像 [lejianwen/rustdesk-server](https://hub.docker.com/r/lejianwen/rustdesk-server)
+ 
++
++# API功能截图
++
+ ![Api.png](./readme/api.png)
+ 
++更多查看 [RustDesk Api](https://github.com/lejianwen/rustdesk-api)
++
++
++--- 
++
+ <p align="center">
+   <a href="#如何自行构建">自行构建</a> •
+   <a href="#Docker-镜像">Docker</a> •
+-- 
+2.54.0 (Apple Git-157)
+

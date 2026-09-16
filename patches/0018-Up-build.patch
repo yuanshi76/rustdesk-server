@@ -1,0 +1,66 @@
+From 9ee99f1412b4d8d1176dcf28d44b096b6f7d2948 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Tue, 21 Jan 2025 20:05:21 +0800
+Subject: [PATCH 18/32] Up build
+
+---
+ .github/workflows/build.yaml | 6 +++---
+ .github/workflows/ghcr.yml   | 4 ++--
+ 2 files changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/.github/workflows/build.yaml b/.github/workflows/build.yaml
+index b145881..bcb2315 100644
+--- a/.github/workflows/build.yaml
++++ b/.github/workflows/build.yaml
+@@ -283,7 +283,7 @@ jobs:
+   # docker build and push of multiarch images
+   docker-manifest:
+ 
+-    name: Docker manifest
++    name: Docker manifest s6
+     needs: docker
+     runs-on: ubuntu-22.04
+ 
+@@ -346,7 +346,7 @@ jobs:
+   # docker build and push of single-arch images
+   docker-classic:
+ 
+-    name: Docker push - ${{ matrix.job.name }}
++    name: Docker push classic - ${{ matrix.job.name }}
+     needs: build
+     runs-on: ubuntu-22.04
+     strategy:
+@@ -416,7 +416,7 @@ jobs:
+   # docker build and push of multiarch images
+   docker-manifest-classic:
+ 
+-    name: Docker manifest
++    name: Docker manifest classic
+     needs: docker
+     runs-on: ubuntu-22.04
+     steps:
+diff --git a/.github/workflows/ghcr.yml b/.github/workflows/ghcr.yml
+index 7904ea3..bb38396 100644
+--- a/.github/workflows/ghcr.yml
++++ b/.github/workflows/ghcr.yml
+@@ -72,7 +72,7 @@ jobs:
+   
+   # Build and push single-arch Docker images to ghcr.io
+   create-s6-overlay-images:
+-    name: Docker push - ${{ matrix.job.name }}
++    name: Docker push s6-overlay - ${{ matrix.job.name }}
+     needs: build
+     runs-on: ubuntu-24.04
+     strategy:
+@@ -205,7 +205,7 @@ jobs:
+ 
+   # Build and push single-arch Docker images to ghcr.io
+   create-classic-images:
+-    name: Docker push - ${{ matrix.job.name }}
++    name: Docker push classic - ${{ matrix.job.name }}
+     needs: build
+     runs-on: ubuntu-24.04
+     strategy:
+-- 
+2.54.0 (Apple Git-157)
+

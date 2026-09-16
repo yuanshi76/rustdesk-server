@@ -1,0 +1,25 @@
+From 3d85ecc18e7bf803f193f28d4498643f994b4916 Mon Sep 17 00:00:00 2001
+From: lejianwen <84855512@qq.com>
+Date: Fri, 11 Jul 2025 09:59:13 +0800
+Subject: [PATCH 24/32] chore: build fix
+
+---
+ .github/workflows/build.yaml | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/.github/workflows/build.yaml b/.github/workflows/build.yaml
+index a7b2418..54ec802 100644
+--- a/.github/workflows/build.yaml
++++ b/.github/workflows/build.yaml
+@@ -76,7 +76,7 @@ jobs:
+ 
+   build-win:
+     name: Build - windows
+-    runs-on: windows-2019
++    runs-on: windows-2022
+ 
+     steps:
+       
+-- 
+2.54.0 (Apple Git-157)
+
