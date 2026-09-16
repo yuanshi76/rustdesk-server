@@ -144,7 +144,7 @@ struct WsPeerGuard {
 impl Drop for WsPeerGuard {
     fn drop(&mut self) {
         if let Ok(mut peers) = self.peers.lock() {
-            if peers.get(&self.addr).map_or(false, |p| p.conn == self.conn) {
+            if peers.get(&self.addr).is_some_and(|p| p.conn == self.conn) {
                 peers.remove(&self.addr);
             }
         }
