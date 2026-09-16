@@ -59,6 +59,33 @@ than you expect.
 `docker-compose.yml` and `docker-compose-s6.yml` are starting points; replace
 `OWNER` and the image tag.
 
+## Publishing your own images
+
+This repository has no `origin` remote: `fork` is `lejianwen/rustdesk-server`
+and `upstream` is `rustdesk/rustdesk-server`, both read-only. To publish:
+
+```bash
+gh repo create <you>/rustdesk-server --private --source=. --remote=origin
+git push -u origin main
+```
+
+Then tag a release. The `build` workflow runs the test suite, cross-compiles for
+`x86_64` and `aarch64` musl, and pushes all three images to GHCR:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Or run it by hand from the Actions tab, which also offers the `move_latest`
+option. Nothing is needed beyond the repository itself — GHCR authenticates with
+the built-in `GITHUB_TOKEN`. Two optional extras:
+
+- **`UPSTREAM_SYNC_TOKEN`** (a PAT with `repo` and `workflow` scope): lets the
+  upstream-watch PR trigger CI. Without it the PR is still opened, just
+  unchecked, and the job logs a warning saying so.
+- Make the GHCR packages public in the repository's package settings if you want
+  to pull them without logging in.
+
 ## Tests
 
 ```bash
