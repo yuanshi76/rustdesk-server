@@ -37,8 +37,8 @@ across 5 files — the "few hundred lines across a handful of files" case, not t
 set of additions (JWT check, `MUST_LOGIN`, TCP/WS registration, key exchange, ws
 peer registry) rather than a rewrite.
 
-Only 8 of the 30 non-merge fork commits carry source changes; the rest are docs,
-CI and Docker packaging.
+Only 8 of the 30 non-merge fork commits touch `src/`; two more touch nothing but
+the version in `Cargo.toml`, and the rest are docs, CI and Docker packaging.
 
 ### Version facts (VERIFIED, from the GitHub API and the trees)
 
@@ -253,7 +253,6 @@ than textual:
    unauthenticated remote peer. Re-applied as fallible: length-checked, returning
    `None`, connection closed. Under the old code a panic mid-`handle_tcp` was
    also a leak path, since the sink was already in `ws_map`.
-
 
 6. **`RequestRelay` was never routed to websocket-only peers.** The fork routed
    punch-hole requests through its websocket map but left `RequestRelay` going
