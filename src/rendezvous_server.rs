@@ -997,7 +997,7 @@ impl RendezvousServer {
                 });
                 return Ok((msg_out, None));
             }
-
+            
             // record punch hole request (from addr -> peer id/peer_addr)
             {
                 let from_ip = try_into_v4(addr).ip().to_string();
