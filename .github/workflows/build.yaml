@@ -41,8 +41,29 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Nothing is published from a tree that does not pass its own tests, the leak
+  # regression included.
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --locked -- --nocapture
+
   build:
     name: Build ${{ matrix.job.arch }}
+    needs: test
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
