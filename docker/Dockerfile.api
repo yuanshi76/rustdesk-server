@@ -1,10 +1,10 @@
-# s6 image: hbbs + hbbr supervised by s6-overlay.
+# s6 + API image: the same s6 supervision tree as docker/Dockerfile, layered on
+# top of lejianwen/rustdesk-api so that hbbs, hbbr and the API server run in one
+# container. This is the fork's variant (patch 0003); it pulls a third-party
+# base image, which is why it is not the default image.
 #
-# Multi-arch: one `docker buildx build --platform linux/amd64,linux/arm64`
-# produces both. The binaries are built outside this Dockerfile and are expected
-# at bin/<TARGETARCH>/, i.e. bin/amd64/hbbs and bin/arm64/hbbs.
+# Build context is ./docker, same as the default image.
 
-# Fetched on the build host, not under emulation.
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS s6
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.0.0
@@ -22,13 +22,15 @@ RUN set -eux; \
     tar -C /s6root -Jxpf /tmp/arch.tar.xz; \
     rm -f /tmp/*.tar.xz
 
-FROM busybox:stable
+ARG API_IMAGE=lejianwen/rustdesk-api:latest
+FROM ${API_IMAGE}
 ARG TARGETARCH
 
 COPY --from=s6 /s6root /
-RUN ln -s /run /var/run
+RUN ln -s /run /var/run || true
 
 COPY rootfs /
+COPY rootfs-api /
 COPY bin/${TARGETARCH}/hbbs /usr/bin/hbbs
 COPY bin/${TARGETARCH}/hbbr /usr/bin/hbbr
 COPY bin/${TARGETARCH}/rustdesk-utils /usr/bin/rustdesk-utils
@@ -36,18 +38,18 @@ RUN chmod -v a+x /usr/bin/hbbs /usr/bin/hbbr /usr/bin/rustdesk-utils /usr/bin/he
 
 ENV RELAY=relay.example.com
 ENV ENCRYPTED_ONLY=0
-# Refuse a connection that presents no login token. See README.
 ENV MUST_LOGIN=N
-# Seconds a websocket may go silent - including the Pong answering our Ping -
-# before hbbs closes it.
 ENV WS_IDLE_TIMEOUT=90
 
-EXPOSE 21115 21116 21116/udp 21117 21118 21119
+# 21114 is the API server.
+EXPOSE 21114 21115 21116 21116/udp 21117 21118 21119
 
 HEALTHCHECK --interval=10s --timeout=5s CMD /usr/bin/healthcheck.sh
 
-WORKDIR /data
+# apimain expects to run from /app and keeps its state in /app/data.
+WORKDIR /app
 
 VOLUME /data
+VOLUME /app/data
 
 ENTRYPOINT ["/init"]

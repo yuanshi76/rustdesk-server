@@ -1,0 +1,73 @@
+name: ci
+
+# Every push and PR. The websocket leak regression test lives here: it is the
+# thing that stops the CLOSE_WAIT leak coming back.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      # Includes tests/ws_leak.rs, which fails if a websocket connection is
+      # ever again left open after the client goes away.
+      - name: Test
+        run: cargo test --locked -- --nocapture
+
+      # Advisory: upstream's own code does not pass either of these cleanly, so
+      # they report rather than gate. What matters is that our own additions do
+      # not make them worse.
+      - name: Format (advisory)
+        continue-on-error: true
+        run: cargo fmt -p hbbs -- --check
+
+      - name: Clippy (advisory)
+        continue-on-error: true
+        run: cargo clippy --all-targets
+
+  soak:
+    name: Soak (${{ github.event_name == 'workflow_dispatch' && '60' || '10' }} min)
+    # Only where it will not hold up a PR: manual runs and pushes to main.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Soak
+        env:
+          SOAK_MINUTES: ${{ github.event_name == 'workflow_dispatch' && '60' || '10' }}
+        run: cargo test --release --locked --test ws_soak -- --ignored --nocapture

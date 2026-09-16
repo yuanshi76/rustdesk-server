@@ -1,0 +1,12 @@
+# The upstream rustdesk/rustdesk-server commit this fork's patch series sits on.
+# .github/workflows/upstream-watch.yaml reads this file, compares
+# UPSTREAM_RELEASE with upstream's latest GitHub release, and opens a PR when
+# they differ. Rebasing uses UPSTREAM_COMMIT as the old base.
+#
+# UPSTREAM_COMMIT is deliberately *ahead* of the UPSTREAM_RELEASE tag: it is the
+# head of upstream master at the time of the rebase, which carries the UDP
+# reflection/amplification fix (109d9a2) and hbb_common 69cea8d. See NOTES.md,
+# "Base selection".
+UPSTREAM_RELEASE=1.1.16
+UPSTREAM_COMMIT=a7736be5e40f85bfc141120dce587e836e5d4b80
+UPSTREAM_HBB_COMMON=69cea8dafee147848ae88702029f4bf7df7224c3
