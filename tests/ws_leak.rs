@@ -7,6 +7,11 @@
 //! process's file descriptors. `/dev/fd` lists them on both Linux (where it is
 //! `/proc/self/fd`) and macOS.
 //!
+//! This file deliberately duplicates the helpers in tests/support/ instead of
+//! using them: it is meant to be dropped, unchanged, into another checkout -
+//! upstream's, or the fork's - to reproduce the leak there. That is how the
+//! three control measurements in NOTES.md were taken.
+//!
 //! Against the pre-fix build this test fails with a delta of roughly N: the
 //! fork moved each websocket's write half into a global map and never removed
 //! it, so the socket stayed open in CLOSE_WAIT for the lifetime of the process.
