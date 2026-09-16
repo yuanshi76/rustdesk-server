@@ -274,8 +274,8 @@ client-side; count this process's descriptors before and after.
 |---|---|---|
 | `fork/forapi` (`fb8b5b9`) — the production artifact | **FAIL** | **200 of 200** (baseline 24 → 224) |
 | `upstream/master` (`a7736be`), unmodified | PASS | 0 |
-| `main` at `cb5cd1f` (fork's ws design re-applied, pre-fix) | **FAIL** | **200 of 200** (baseline 23 → 223) |
-| `main` at `363c664` (fix applied) | PASS | 0 (baseline 22 → 22) |
+| `main` at `3f5362d` (fork's ws design re-applied, pre-fix) | **FAIL** | **200 of 200** (baseline 23 → 223) |
+| `main` at `cfb1c6c` (fix applied) | PASS | 0 (baseline 22 → 22) |
 
 The upstream row is the answer to Phase 3a: **the leak is the fork's, not
 upstream's.** There is nothing to report to `rustdesk/rustdesk-server` about it.
@@ -325,7 +325,7 @@ is about 25× faster.
 ### Soak results
 
 Sixty minutes against the release `hbbs` as a child process, ten synthetic
-clients, **5070 connections**, 120 samples, commit `09cb4d9` — whose `src/` is
+clients, **5070 connections**, 120 samples, commit `24a424c` — whose `src/` is
 identical to the tip except `map_or(false, f)` written as `is_some_and(f)`.
 
 ```
@@ -417,9 +417,9 @@ it is not the same evidence, and it should not be reported as if it were.
    trailer on every re-applied commit.
 2. The base is `upstream/master` (`a7736be`), not the `1.1.16` tag. Reasons in
    "Base selection".
-3. `main` deliberately contains one commit that fails its own test (`cb5cd1f`),
+3. `main` deliberately contains one commit that fails its own test (`3f5362d`),
    so that "the regression test fails against the pre-fix build" is reproducible
-   forever with `git checkout cb5cd1f && cargo test --test ws_leak`, on this
+   forever with `git checkout 3f5362d && cargo test --test ws_leak`, on this
    base and not only against the year-old fork.
 4. Three small changes beyond a straight re-application, each because leaving
    them alone would have shipped a defect: the JWT secret is no longer printed
