@@ -1,4 +1,10 @@
-version: '3'
+# Classic layout: one process per container.
+#
+# Replace OWNER with the GitHub owner the images were published under, and
+# rustdesk.example.com with this host's public address.
+#
+# Pin a version tag rather than :latest. Automated builds never move :latest;
+# tags look like 1.1.16-a1b2c3d (upstream release - fork revision).
 
 networks:
   rustdesk-net:
@@ -7,13 +13,20 @@ networks:
 services:
   hbbs:
     container_name: hbbs
+    image: ghcr.io/OWNER/rustdesk-server:1.1.16-CHANGEME
+    command: hbbs -r rustdesk.example.com:21117
     ports:
       - 21115:21115
       - 21116:21116
       - 21116:21116/udp
       - 21118:21118
-    image: rustdesk/rustdesk-server:latest
-    command: hbbs -r rustdesk.example.com:21117
+    environment:
+      # Refuse a connection that presents no login token. Pairs with
+      # RUSTDESK_API_JWT_KEY when the API server is in use.
+      - MUST_LOGIN=N
+      # - RUSTDESK_API_JWT_KEY=<the API server's JWT secret>
+      # Seconds a websocket may go silent before hbbs closes it.
+      - WS_IDLE_TIMEOUT=90
     volumes:
       - ./data:/root
     networks:
@@ -24,11 +37,11 @@ services:
 
   hbbr:
     container_name: hbbr
+    image: ghcr.io/OWNER/rustdesk-server:1.1.16-CHANGEME
+    command: hbbr
     ports:
       - 21117:21117
       - 21119:21119
-    image: rustdesk/rustdesk-server:latest
-    command: hbbr
     volumes:
       - ./data:/root
     networks:

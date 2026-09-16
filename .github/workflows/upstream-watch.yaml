@@ -1,0 +1,277 @@
+name: upstream-watch
+
+# Watches rustdesk/rustdesk-server for a new release, rebases this fork's patch
+# series onto it, and opens a PR for a human to review. It never merges.
+#
+# Two GitHub behaviours this has to work around:
+#
+#   1. A scheduled workflow is disabled automatically after 60 days without
+#      repository activity. The keepalive job below commits a timestamp when the
+#      repository has been quiet, which counts as activity.
+#   2. A push made with GITHUB_TOKEN does not trigger other workflows, so the
+#      sync PR would sit without a CI run. Set an UPSTREAM_SYNC_TOKEN secret (a
+#      PAT with `repo` and `workflow` scope) and CI will run on the PR; without
+#      it the PR is still opened, just unchecked, and the job says so.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: "Pretend this upstream release is the latest (for testing)"
+        type: string
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  UPSTREAM_REPO: rustdesk/rustdesk-server
+
+jobs:
+  check:
+    name: Check for a new upstream release
+    runs-on: ubuntu-22.04
+    outputs:
+      current: ${{ steps.compare.outputs.current }}
+      latest: ${{ steps.compare.outputs.latest }}
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compare
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          . ./UPSTREAM_VERSION
+          if [ -n "${{ inputs.force_release }}" ]; then
+            LATEST='${{ inputs.force_release }}'
+            echo "Forced latest release: $LATEST"
+          else
+            LATEST=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)
+          fi
+          echo "current=$UPSTREAM_RELEASE" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          if [ "$LATEST" = "$UPSTREAM_RELEASE" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Up to date with upstream $LATEST."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Upstream moved: $UPSTREAM_RELEASE -> $LATEST"
+          fi
+
+  sync:
+    name: Rebase onto ${{ needs.check.outputs.latest }}
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "upstream-watch[bot]"
+          git config user.email "upstream-watch@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream --tags --force
+
+      - name: Rebase the patch series
+        id: rebase
+        continue-on-error: true
+        run: |
+          set -eu
+          . ./UPSTREAM_VERSION
+          LATEST='${{ needs.check.outputs.latest }}'
+          BRANCH="upstream-sync/${LATEST}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -B "$BRANCH"
+          # Replay everything this fork adds on top of the recorded base onto
+          # the new release tag.
+          if ! git rebase --onto "$LATEST" "$UPSTREAM_COMMIT" "$BRANCH" > /tmp/rebase.log 2>&1; then
+            {
+              echo "conflict=true"
+            } >> "$GITHUB_OUTPUT"
+            git rebase --abort || true
+            cat /tmp/rebase.log
+            exit 1
+          fi
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+      - name: Advance the submodule pointer
+        if: steps.rebase.outcome == 'success'
+        run: |
+          set -eu
+          LATEST='${{ needs.check.outputs.latest }}'
+          # Whatever hbb_common commit the new upstream release references. A
+          # stale pointer compiles and then misbehaves at runtime, so this is
+          # checked rather than assumed.
+          WANT=$(git rev-parse "${LATEST}:libs/hbb_common")
+          git submodule update --init --recursive
+          HAVE=$(git rev-parse HEAD:libs/hbb_common)
+          if [ "$WANT" != "$HAVE" ]; then
+            git -C libs/hbb_common fetch origin
+            git -C libs/hbb_common checkout "$WANT"
+            git add libs/hbb_common
+            git commit -m "libs: advance hbb_common to ${WANT} for upstream ${LATEST}"
+          fi
+          echo "hbb_common is now $(git rev-parse HEAD:libs/hbb_common)"
+
+      - name: Record the new base
+        if: steps.rebase.outcome == 'success'
+        run: |
+          set -eu
+          LATEST='${{ needs.check.outputs.latest }}'
+          COMMIT=$(git rev-parse "$LATEST")
+          HBB=$(git rev-parse "HEAD:libs/hbb_common")
+          python3 - "$LATEST" "$COMMIT" "$HBB" <<'PY'
+          import sys, re, pathlib
+          latest, commit, hbb = sys.argv[1:4]
+          p = pathlib.Path("UPSTREAM_VERSION")
+          text = p.read_text()
+          text = re.sub(r"^UPSTREAM_RELEASE=.*$", f"UPSTREAM_RELEASE={latest}", text, flags=re.M)
+          text = re.sub(r"^UPSTREAM_COMMIT=.*$", f"UPSTREAM_COMMIT={commit}", text, flags=re.M)
+          text = re.sub(r"^UPSTREAM_HBB_COMMON=.*$", f"UPSTREAM_HBB_COMMON={hbb}", text, flags=re.M)
+          p.write_text(text)
+          PY
+          git add UPSTREAM_VERSION
+          git commit -m "chore: record upstream ${LATEST} as the base"
+
+      - name: Install toolchain
+        if: steps.rebase.outcome == 'success'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and test the rebased tree
+        id: verify
+        if: steps.rebase.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cargo build --all-targets
+          cargo test -- --nocapture
+
+      - name: Short soak
+        id: soak
+        if: steps.verify.outcome == 'success'
+        continue-on-error: true
+        env:
+          SOAK_MINUTES: 10
+        run: cargo test --release --test ws_soak -- --ignored --nocapture
+
+      - name: Push the branch
+        if: steps.rebase.outcome == 'success'
+        run: git push --force origin "${{ steps.rebase.outputs.branch }}"
+
+      - name: Open the PR
+        if: steps.rebase.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          LATEST='${{ needs.check.outputs.latest }}'
+          CURRENT='${{ needs.check.outputs.current }}'
+          BODY=$(cat <<EOT
+          Automated rebase of this fork's patch series from upstream \`${CURRENT}\` onto \`${LATEST}\`.
+
+          | check | result |
+          |---|---|
+          | rebase | clean |
+          | \`cargo build\` + \`cargo test\` | ${{ steps.verify.outcome }} |
+          | 10 minute soak | ${{ steps.soak.outcome }} |
+
+          **A green run does not clear this PR.** The kept patches touch
+          authentication and token handling, which is an area of active upstream
+          development; a patch can apply cleanly and still be semantically wrong.
+          Before merging, read the upstream diff for changes to:
+
+          - \`handle_punch_hole_request\` — where \`MUST_LOGIN\` and the JWT check sit
+          - \`handle_tcp\` / \`handle_listener_inner\` — the websocket path and its registry
+          - anything upstream adds that duplicates a fork feature, which would make
+            that patch OBSOLETE (see \`patches/INVENTORY.md\`)
+
+          Upstream diff: https://github.com/${UPSTREAM_REPO}/compare/${CURRENT}...${LATEST}
+          EOT
+          )
+          gh pr create \
+            --title "Rebase onto upstream ${LATEST}" \
+            --body "$BODY" \
+            --base main \
+            --head "${{ steps.rebase.outputs.branch }}" || echo "PR already open"
+          if [ -z "${{ secrets.UPSTREAM_SYNC_TOKEN }}" ]; then
+            echo "::warning::UPSTREAM_SYNC_TOKEN is not set, so this PR will not trigger CI. Push an empty commit to the branch, or set the secret."
+          fi
+
+      - name: Open an issue on conflict
+        if: steps.rebase.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          LATEST='${{ needs.check.outputs.latest }}'
+          TITLE="Upstream ${LATEST} does not rebase cleanly"
+          if gh issue list --state open --search "$TITLE in:title" --json title --jq '.[].title' | grep -qxF "$TITLE"; then
+            echo "Issue already open."
+            exit 0
+          fi
+          {
+            echo "Rebasing this fork's patch series onto upstream \`${LATEST}\` hit a conflict, so no PR was opened."
+            echo
+            echo "Resolve it by hand:"
+            echo
+            echo '```'
+            echo "git fetch upstream --tags"
+            echo "git checkout -b upstream-sync/${LATEST} main"
+            echo "git rebase --onto ${LATEST} \$(. ./UPSTREAM_VERSION; echo \$UPSTREAM_COMMIT)"
+            echo '```'
+            echo
+            echo "Rebase output:"
+            echo
+            echo '```'
+            tail -c 8000 /tmp/rebase.log 2>/dev/null || echo "(no log captured)"
+            echo '```'
+          } > /tmp/issue.md
+          gh issue create --title "$TITLE" --body-file /tmp/issue.md
+
+  keepalive:
+    name: Keep the schedule alive
+    needs: check
+    if: needs.check.outputs.changed == 'false' && github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
+
+      # GitHub disables a scheduled workflow after 60 days of repository
+      # inactivity. Commit at most once a month, which is enough to reset that
+      # clock without filling the log with noise.
+      - name: Touch the check timestamp
+        run: |
+          set -eu
+          STAMP=.github/last-upstream-check
+          NOW=$(date -u +%s)
+          THEN=$( [ -f "$STAMP" ] && date -u -d "$(cat "$STAMP")" +%s 2>/dev/null || echo 0 )
+          AGE=$(( NOW - THEN ))
+          if [ "$AGE" -lt 2592000 ]; then
+            echo "Last keepalive was $(( AGE / 86400 )) days ago; nothing to do."
+            exit 0
+          fi
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$STAMP"
+          git config user.name  "upstream-watch[bot]"
+          git config user.email "upstream-watch@users.noreply.github.com"
+          git add "$STAMP"
+          git commit -m "chore: upstream-watch keepalive"
+          git push

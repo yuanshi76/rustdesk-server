@@ -1,0 +1,25 @@
+# s6 layout: hbbs and hbbr supervised in one container.
+#
+# Use rustdesk-server-s6-api instead to get the API server too; it also needs
+# port 21114 published and a volume at /app/data.
+
+services:
+  rustdesk-server:
+    container_name: rustdesk-server
+    image: ghcr.io/OWNER/rustdesk-server-s6:1.1.16-CHANGEME
+    ports:
+      - 21115:21115
+      - 21116:21116
+      - 21116:21116/udp
+      - 21117:21117
+      - 21118:21118
+      - 21119:21119
+    environment:
+      - RELAY=rustdesk.example.com:21117
+      - ENCRYPTED_ONLY=1
+      - MUST_LOGIN=N
+      # - RUSTDESK_API_JWT_KEY=<the API server's JWT secret>
+      - WS_IDLE_TIMEOUT=90
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
