@@ -322,6 +322,42 @@ Two minutes, ten clients, 170 connections:
 The fork's curve is the production sawtooth, about 25× faster because the churn
 is about 25× faster.
 
+### Soak results
+
+Sixty minutes against the release `hbbs` as a child process, ten synthetic
+clients, **5070 connections**, 120 samples, commit `09cb4d9` — whose `src/` is
+identical to the tip except `map_or(false, f)` written as `is_some_and(f)`.
+
+```
+fds   25 -> 25          (first quarter mean 25.0, last quarter mean 25.0)
+RSS   15376 -> 17392 kB (first quarter mean 15659, last quarter mean 17364)
+```
+
+**The descriptor count did not move once in an hour.** Compare the same test
+against the fork, where it climbed 56 → 196 in two minutes.
+
+Live census of the same process at ~52 minutes, through its own console, next to
+the production census from the brief:
+
+```
+                        this build (5070 conns)   production (~29 h)
+sockets in CLOSE-WAIT            0                      2327
+sockets LISTEN                   3                         7
+ws peers registered              0                         -
+ip-blocker entries            4390                         -
+```
+
+The RSS is the only number that is not flat, and it is `IP_BLOCKER`, not a leak.
+That map is keyed by source IP and is pruned only after a day, and this test
+gives *every connection* a distinct source address on purpose — that is what
+makes the leak visible at all. 4390 entries for 4400-odd connections at the
+moment of the census, roughly 2 MB, which is the whole of the growth. Production
+sees five client IPs and would accumulate five entries. Measured rather than
+assumed: the console's `ib` command printed the count.
+
+`ws peers: 0` is the registry the fix rewrote, empty after thousands of
+connections, which is the property the whole change is about.
+
 ### Images, built locally
 
 All three Dockerfiles were built here for `linux/amd64` and `linux/arm64` with
