@@ -24,7 +24,8 @@ fn main() -> ResultType<()> {
         -M, --rmem=[NUMBER(default={RMEM})] 'Sets UDP recv buffer size, set system rmem_max first, e.g., sudo sysctl -w net.core.rmem_max=52428800. vi /etc/sysctl.conf, net.core.rmem_max=52428800, sudo sysctl –p'
         , --mask=[MASK] '[DEPRECATED] Determine if the connection comes from LAN, e.g. 192.168.0.0/16'
         -k, --key=[KEY] 'Only allow the client with the same key'
-        , --must-login=[Y|N] 'Only allow a client that presents a login token (env: MUST_LOGIN)'",
+        , --must-login=[Y|N] 'Only allow a client that presents a login token (env: MUST_LOGIN)'
+        , --ws-idle-timeout=[SECONDS(default=90)] 'Close a websocket that has sent nothing for this long (env: WS_IDLE_TIMEOUT)'",
     );
     init_args(&args, "hbbs", "RustDesk ID/Rendezvous Server");
     let port = get_arg_or("port", RENDEZVOUS_PORT.to_string()).parse::<i32>()?;
