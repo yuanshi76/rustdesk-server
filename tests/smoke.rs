@@ -102,7 +102,10 @@ async fn rendezvous_handshake_end_to_end() {
     );
 
     assert!(listens(PORT).await, "hbbs is not listening on {PORT}");
-    assert!(listens(NAT_PORT).await, "no NAT-test listener on {NAT_PORT}");
+    assert!(
+        listens(NAT_PORT).await,
+        "no NAT-test listener on {NAT_PORT}"
+    );
     assert!(listens(WS_PORT).await, "no websocket listener on {WS_PORT}");
     assert!(listens(RELAY_PORT).await, "hbbr is not listening");
 
@@ -155,10 +158,7 @@ async fn rendezvous_handshake_end_to_end() {
                 "punch hole refused: {}",
                 r.other_failure
             );
-            assert!(
-                !r.socket_addr.is_empty(),
-                "A was not told where B is"
-            );
+            assert!(!r.socket_addr.is_empty(), "A was not told where B is");
         }
         other => panic!("expected PunchHoleResponse at A, got {other:?}"),
     }
