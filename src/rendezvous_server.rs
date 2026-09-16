@@ -30,6 +30,7 @@ use hbb_common::{
     udp::FramedSocket,
     AddrMangle, ResultType,
 };
+use crate::jwt;
 use ipnetwork::Ipv4Network;
 use sodiumoxide::crypto::sign;
 use std::{
@@ -60,6 +61,7 @@ static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
 type RelayServers = Vec<String>;
 const CHECK_RELAY_TIMEOUT: u64 = 3_000;
 static ALWAYS_USE_RELAY: AtomicBool = AtomicBool::new(false);
+static MUST_LOGIN: AtomicBool = AtomicBool::new(false);
 
 // Store punch hole requests
 use once_cell::sync::Lazy;
@@ -172,6 +174,27 @@ impl RendezvousServer {
         log::info!(
             "ALWAYS_USE_RELAY={}",
             if ALWAYS_USE_RELAY.load(Ordering::SeqCst) {
+                "Y"
+            } else {
+                "N"
+            }
+        );
+
+        // --must-login takes precedence; MUST_LOGIN in the environment is the
+        // documented way to set it in the Docker image.
+        let must_login = get_arg("must-login");
+        if must_login.to_uppercase() == "Y"
+            || (must_login.is_empty()
+                && std::env::var("MUST_LOGIN")
+                    .unwrap_or_default()
+                    .to_uppercase()
+                    == "Y")
+        {
+            MUST_LOGIN.store(true, Ordering::SeqCst);
+        }
+        log::info!(
+            "MUST_LOGIN={}",
+            if MUST_LOGIN.load(Ordering::SeqCst) {
                 "Y"
             } else {
                 "N"
@@ -717,6 +740,27 @@ impl RendezvousServer {
             });
             return Ok((msg_out, None));
         }
+        if MUST_LOGIN.load(Ordering::SeqCst) {
+            if ph.token.is_empty() {
+                log::info!("Refused punch hole from {}: MUST_LOGIN and no token", addr);
+                let mut msg_out = RendezvousMessage::new();
+                msg_out.set_punch_hole_response(PunchHoleResponse {
+                    other_failure: String::from("Connection failed, please login!"),
+                    ..Default::default()
+                });
+                return Ok((msg_out, None));
+            } else if !jwt::SECRET.is_empty() {
+                if let Err(err) = jwt::verify_token(&ph.token) {
+                    log::info!("Refused punch hole from {}: {}", addr, err);
+                    let mut msg_out = RendezvousMessage::new();
+                    msg_out.set_punch_hole_response(PunchHoleResponse {
+                        other_failure: String::from("Token error, please log out and log back in!"),
+                        ..Default::default()
+                    });
+                    return Ok((msg_out, None));
+                }
+            }
+        }
         let id = ph.id;
         // punch hole request from A, relay to B,
         // check if in same intranet first,
@@ -963,14 +1007,15 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
                     "ip-changes(ic) [<id>|<number>] [-]",
                     "punch-requests(pr) [<number>] [-]",
-                    "always-use-relay(aur)",
-                    "test-geo(tg) <ip1> <ip2>"
+                    "always-use-relay(aur) [Y|N]",
+                    "test-geo(tg) <ip1> <ip2>",
+                    "must-login(ml) [Y|N]"
                 )
             }
             Some("relay-servers" | "rs") => {
@@ -1100,6 +1145,13 @@ impl RendezvousServer {
                         "ALWAYS_USE_RELAY: {:?}",
                         ALWAYS_USE_RELAY.load(Ordering::SeqCst)
                     );
+                }
+            }
+            Some("must-login" | "ml") => {
+                if let Some(v) = fds.next() {
+                    MUST_LOGIN.store(v.to_uppercase() == "Y", Ordering::SeqCst);
+                } else {
+                    let _ = writeln!(res, "MUST_LOGIN: {:?}", MUST_LOGIN.load(Ordering::SeqCst));
                 }
             }
             Some("test-geo" | "tg") => {
