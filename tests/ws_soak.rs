@@ -6,12 +6,19 @@
 //!     cargo test --release --test ws_soak -- --ignored --nocapture
 //!
 //! Tunables (environment): SOAK_MINUTES (default 60), SOAK_CONCURRENCY
-//! (default 5, matching the five clients on the production host),
-//! SOAK_RECONNECT_MS (default 1000), SOAK_SAMPLE_SEC (default 30).
+//! (default 10), SOAK_RECONNECT_MS (default 7000), SOAK_SAMPLE_SEC (default 30).
 //!
-//! The production leak was ~2300 sockets/day. At the defaults this test opens
-//! about 18000 connections an hour, so a leak of the same shape shows up within
-//! minutes rather than days.
+//! Every connection registers its public key, because that is what a real
+//! client does on a fresh websocket and it is the path the leak was on - the
+//! fork stashed the write half on a successful RegisterPk and nowhere else.
+//! A soak that only heartbeats never touches it and would pass against the
+//! leaking build, which is worth nothing.
+//!
+//! Hence the 7 second reconnect interval: hbbs refuses more than three
+//! RegisterPk from one peer in six seconds, so anything faster is answered with
+//! TOO_FREQUENT and registers nothing. Ten clients at 7 s is about 5000
+//! connections an hour, against ~2300 sockets/day in production, so a leak of
+//! the same shape shows up in minutes rather than days.
 
 mod support;
 
@@ -75,28 +82,36 @@ fn spawn_hbbs(dir: &std::path::Path) -> Server {
     Server(child)
 }
 
-/// One client's worth of churn: connect, heartbeat, close, repeat.
+/// One client's worth of churn: connect, register, heartbeat, close, repeat.
 ///
-/// The public key is registered once, on the first connection, and every
-/// connection after that only heartbeats - which is what a real client does,
-/// and which also stays clear of the anti-abuse limiter that refuses more than
-/// three RegisterPk from one peer in six seconds. Keeping the id pool fixed
-/// keeps the peer table from growing, so any memory growth is the leak and not
-/// legitimate bookkeeping.
+/// Registering on every connection is the point - see the note at the top of
+/// the file. The id pool is fixed, so the peer table does not grow and any
+/// memory growth is the leak rather than legitimate bookkeeping.
 async fn churn(client: usize, reconnect: Duration, until: Instant) -> u64 {
     use hbb_common::futures_util::SinkExt;
     let mut connections = 0u64;
     let id = format!("soak-{client:03}");
-    let ip = format!("10.9.{}.{}", client / 256 % 256, client % 256);
-
-    let mut ws = connect(WS_PORT, Some(&ip)).await;
-    register_pk(&mut ws, &id).await;
-    ws.close(None).await.ok();
-    drop(ws);
-    connections += 1;
 
     while Instant::now() < until {
+        // A distinct source address per connection, which is what hbbs sees in
+        // production: every reconnect arrives from a fresh ephemeral port, so
+        // every connection is a distinct key in the peer registry. Reusing one
+        // address per client would make each registration *replace* the
+        // previous entry and free the socket it held, hiding the leak. It also
+        // keeps clear of the limiter that blocks an IP after 30 registrations
+        // in 60 seconds.
+        //
+        // The peer id pool stays fixed, so the peer table does not grow.
+        let n = connections;
+        let ip = format!("10.{}.{}.{}", client % 256, (n / 256) % 256, n % 256);
         let mut ws = connect(WS_PORT, Some(&ip)).await;
+        register_pk(&mut ws, &id).await;
+
+        // Fire and forget: the reply is not waited for, both because a real
+        // client does not block on its heartbeat and because the leaking build
+        // cannot answer at all - having handed its write half to the registry,
+        // it has nothing left to reply with. Waiting here would make this test
+        // die against the very build it is supposed to catch.
         let mut msg = RendezvousMessage::new();
         msg.set_register_peer(RegisterPeer {
             id: id.clone(),
@@ -104,7 +119,7 @@ async fn churn(client: usize, reconnect: Duration, until: Instant) -> u64 {
             ..Default::default()
         });
         send(&mut ws, msg).await;
-        let _ = recv(&mut ws, "RegisterPeerResponse").await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
 
         ws.close(None).await.ok();
         drop(ws);
@@ -118,8 +133,8 @@ async fn churn(client: usize, reconnect: Duration, until: Instant) -> u64 {
 #[ignore = "slow: run explicitly with --ignored"]
 async fn resident_memory_and_descriptors_stay_flat() {
     let minutes: u64 = env_or("SOAK_MINUTES", 60);
-    let clients: usize = env_or("SOAK_CONCURRENCY", 5);
-    let reconnect = Duration::from_millis(env_or("SOAK_RECONNECT_MS", 1000));
+    let clients: usize = env_or("SOAK_CONCURRENCY", 10);
+    let reconnect = Duration::from_millis(env_or("SOAK_RECONNECT_MS", 7000));
     let sample_every = Duration::from_secs(env_or("SOAK_SAMPLE_SEC", 30));
 
     let dir = std::env::temp_dir().join(format!("hbbs-soak-{}", std::process::id()));
