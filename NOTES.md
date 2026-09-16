@@ -323,6 +323,21 @@ Two minutes, ten clients, 170 connections:
 The fork's curve is the production sawtooth, about 25× faster because the churn
 is about 25× faster.
 
+### Images, built locally
+
+All three Dockerfiles were built here for `linux/amd64` and `linux/arm64` with
+`docker buildx` (Colima on an arm64 Mac), rather than trusted to CI. That caught
+a real error: `ARG API_IMAGE` was declared inside the s6 builder stage, but a
+Dockerfile ARG is only usable in a `FROM` if it is declared in the global scope
+before the first `FROM`, so `docker/Dockerfile.api` failed outright with
+`base name (${API_IMAGE}) should not be blank`. Fixed and rebuilt.
+
+What has **not** been run here: the GitHub Actions workflows themselves. They
+need a GitHub repository, so their first real execution will be in the user's
+repo. The parts that could be checked locally were: every workflow file parses
+as YAML, the Dockerfiles build on both platforms, the rebase mechanic the
+watcher depends on (below), and the whole test suite the CI jobs invoke.
+
 ### Upstream-watch rebase, simulated
 
 The watcher's core mechanic was exercised locally rather than trusted: a
