@@ -166,20 +166,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # One tag per line, written straight into the heredoc: an accumulated
+      # string with a trailing newline would give build-push-action an empty
+      # tag, which it rejects.
       - name: Build tag lists
         id: taglists
         run: |
           set -eu
           OWNER='${{ steps.tags.outputs.owner }}'
-          classic=""; s6=""; api=""
-          for s in ${{ steps.tags.outputs.suffixes }}; do
-            classic="$classic""ghcr.io/$OWNER/rustdesk-server:$s"$'\n'
-            s6="$s6""ghcr.io/$OWNER/rustdesk-server-s6:$s"$'\n'
-            api="$api""ghcr.io/$OWNER/rustdesk-server-s6-api:$s"$'\n'
+          SUFFIXES='${{ steps.tags.outputs.suffixes }}'
+          for pair in "classic:rustdesk-server" "s6:rustdesk-server-s6" "api:rustdesk-server-s6-api"; do
+            key=${pair%%:*}
+            image=${pair#*:}
+            {
+              echo "${key}<<EOT"
+              for s in $SUFFIXES; do
+                echo "ghcr.io/${OWNER}/${image}:${s}"
+              done
+              echo "EOT"
+            } >> "$GITHUB_OUTPUT"
           done
-          { echo "classic<<EOT"; echo "$classic"; echo "EOT"; } >> "$GITHUB_OUTPUT"
-          { echo "s6<<EOT";      echo "$s6";      echo "EOT"; } >> "$GITHUB_OUTPUT"
-          { echo "api<<EOT";     echo "$api";     echo "EOT"; } >> "$GITHUB_OUTPUT"
 
       - name: Build and push classic image
         uses: docker/build-push-action@v6
