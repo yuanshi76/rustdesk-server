@@ -5,6 +5,10 @@
 #
 # Build context is ./docker, same as the default image.
 
+# Declared before the first FROM so it can be used in one. Override with
+# --build-arg API_IMAGE=... to pin a digest.
+ARG API_IMAGE=lejianwen/rustdesk-api:latest
+
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS s6
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.0.0
@@ -22,7 +26,6 @@ RUN set -eux; \
     tar -C /s6root -Jxpf /tmp/arch.tar.xz; \
     rm -f /tmp/*.tar.xz
 
-ARG API_IMAGE=lejianwen/rustdesk-api:latest
 FROM ${API_IMAGE}
 ARG TARGETARCH
 
