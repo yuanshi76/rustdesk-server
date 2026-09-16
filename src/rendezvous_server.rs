@@ -597,6 +597,17 @@ impl RendezvousServer {
                     msg_out.set_test_nat_response(res);
                     Self::send_to_sink(sink, msg_out).await;
                 }
+                Some(rendezvous_message::Union::OnlineRequest(or)) => {
+                    // Web and websocket clients have no second connection to
+                    // the dedicated online-status port, so answer it here too.
+                    let states = self.peers_online_state(or.peers).await;
+                    let mut msg_out = RendezvousMessage::new();
+                    msg_out.set_online_response(OnlineResponse {
+                        states: states.into(),
+                        ..Default::default()
+                    });
+                    Self::send_to_sink(sink, msg_out).await;
+                }
                 Some(rendezvous_message::Union::RegisterPk(_)) => {
                     let res = register_pk_response::Result::NOT_SUPPORT;
                     let mut msg_out = RendezvousMessage::new();
@@ -855,11 +866,9 @@ impl RendezvousServer {
     }
 
     #[inline]
-    async fn handle_online_request(
-        &mut self,
-        stream: &mut FramedStream,
-        peers: Vec<String>,
-    ) -> ResultType<()> {
+    /// One bit per requested peer, most significant bit first: set when that
+    /// peer registered within REG_TIMEOUT.
+    async fn peers_online_state(&mut self, peers: Vec<String>) -> BytesMut {
         let mut states = BytesMut::zeroed((peers.len() + 7) / 8);
         for (i, peer_id) in peers.iter().enumerate() {
             if let Some(peer) = self.pm.get_in_memory(peer_id).await {
@@ -872,6 +881,16 @@ impl RendezvousServer {
                 }
             }
         }
+        states
+    }
+
+    #[inline]
+    async fn handle_online_request(
+        &mut self,
+        stream: &mut FramedStream,
+        peers: Vec<String>,
+    ) -> ResultType<()> {
+        let states = self.peers_online_state(peers).await;
 
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_online_response(OnlineResponse {
