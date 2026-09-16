@@ -82,7 +82,12 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 Or run it by hand from the Actions tab, which also offers the `move_latest`
-option. Nothing is needed beyond the repository itself — GHCR authenticates with
+option.
+
+Do not push with `--tags`. This repository carries upstream's whole tag history
+(`1.1.16`, `1.1.15`, …) and every one of them matches the `build` workflow's tag
+trigger, so pushing them all would start a build per tag. Push the one tag you
+mean. Nothing is needed beyond the repository itself — GHCR authenticates with
 the built-in `GITHUB_TOKEN`. Two optional extras:
 
 - **`UPSTREAM_SYNC_TOKEN`** (a PAT with `repo` and `workflow` scope): lets the
