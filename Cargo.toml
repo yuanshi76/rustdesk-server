@@ -39,11 +39,15 @@ bcrypt = "0.13"
 chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "8"
 # Not used by this crate's code. hbb_common pulls tokio-tungstenite with
-# native-tls, whose openssl-sys needs an OpenSSL built for the *target*, and
-# cross's musl images do not ship one (checked: the 0.2.5 aarch64-musl image
-# sets no OPENSSL_* variables). Naming openssl here with `vendored` makes
-# openssl-sys build it from source, which feature unification applies to the
-# whole graph, so a musl cross-build needs nothing from the build host.
+# native-tls, whose openssl-sys needs an OpenSSL for the platform it is built
+# for, and cross's musl images ship none (checked: the 0.2.5 aarch64-musl image
+# sets no OPENSSL_* variables). Naming openssl with `vendored` makes openssl-sys
+# build it from source instead, so a cross-build needs nothing from the host.
+#
+# It has to be repeated under [build-dependencies], because hbb_common is one
+# too: the feature resolver keeps build-dependency features separate, so the
+# build-script side of the graph gets its own openssl-sys unit, and without this
+# that one still looks for a system OpenSSL and fails.
 openssl = { version = "0.10", features = ["vendored"] }
 headers = "0.3"
 once_cell = "1.8"
@@ -69,6 +73,8 @@ reqwest = { git = "https://github.com/rustdesk-org/reqwest", features = ["blocki
 
 [build-dependencies]
 hbb_common = { path = "libs/hbb_common" }
+# See the note on the [dependencies] entry.
+openssl = { version = "0.10", features = ["vendored"] }
 
 [workspace]
 members = ["libs/hbb_common"]
