@@ -112,8 +112,8 @@ static MUST_LOGIN: AtomicBool = AtomicBool::new(false);
 /// How long a websocket may go without a single inbound frame - including the
 /// Pong answering our Ping - before we close it. Override with WS_IDLE_TIMEOUT
 /// (seconds).
-static WS_IDLE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(90_000);
 const WS_IDLE_TIMEOUT_DEFAULT_SEC: u64 = 90;
+static WS_IDLE_TIMEOUT_MS: AtomicU64 = AtomicU64::new(WS_IDLE_TIMEOUT_DEFAULT_SEC * 1000);
 /// Silence after which we probe the peer with a Ping. Its Pong counts as an
 /// inbound frame, so a live but quiet client never hits the idle timeout.
 const WS_PING_INTERVAL_MS: u64 = 30_000;
@@ -126,13 +126,8 @@ type WsPeers = Arc<StdMutex<HashMap<SocketAddr, WsPeer>>>;
 
 /// A way to reach a websocket peer: a channel into the task that owns its
 /// socket. Deliberately not the socket, nor any part of it - see NOTES.md.
+/// The connection task holds its own copy so it can register itself.
 struct WsPeer {
-    conn: u64,
-    tx: WsSender,
-}
-
-/// What a websocket connection task needs in order to register itself.
-struct WsConnCtx {
     conn: u64,
     tx: WsSender,
 }
@@ -579,7 +574,7 @@ impl RendezvousServer {
         addr: SocketAddr,
         key: &str,
         ws: bool,
-        ws_conn: Option<&WsConnCtx>,
+        ws_conn: Option<&WsPeer>,
     ) -> bool {
         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
             match msg_in.union {
@@ -1125,7 +1120,7 @@ impl RendezvousServer {
 
     /// Record how to reach this websocket peer. Overwrites any older entry for
     /// the same address, whose own guard will then leave it alone.
-    fn register_ws_peer(&self, addr: SocketAddr, ctx: &WsConnCtx) {
+    fn register_ws_peer(&self, addr: SocketAddr, ctx: &WsPeer) {
         if let Ok(mut peers) = self.ws_peers.lock() {
             peers.insert(
                 try_into_v4(addr),
@@ -1575,7 +1570,7 @@ impl RendezvousServer {
             // guard takes it back out when the loop ends - normally, on error,
             // on timeout or on panic. See NOTES.md.
             let (tx_ws, mut rx_ws) = mpsc::unbounded_channel::<RendezvousMessage>();
-            let ctx = WsConnCtx {
+            let ctx = WsPeer {
                 conn: WS_CONN_SERIAL.fetch_add(1, Ordering::SeqCst),
                 tx: tx_ws,
             };
