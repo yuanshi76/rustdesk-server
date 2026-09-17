@@ -48,6 +48,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Manual runs only. Checks the stored secret as Actions sees it, which is
+      # the one thing a local test of the token cannot do: a trailing newline in
+      # the stored value - from `echo` instead of `printf` - authenticates fine
+      # on your machine and fails here. Reports without derailing the run.
+      - name: Check UPSTREAM_SYNC_TOKEN
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          set -u
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::warning::UPSTREAM_SYNC_TOKEN is not set. The sync job will still rebase and push, but the pull request it opens will not trigger CI."
+            exit 0
+          fi
+          if ! who=$(gh api user --jq .login 2>/tmp/err); then
+            cat /tmp/err
+            echo "::error::UPSTREAM_SYNC_TOKEN is set but GitHub rejected it. Re-set it with printf, not echo: a trailing newline fails exactly like this."
+            exit 1
+          fi
+          echo "Authenticates as: $who"
+          if ! gh api "repos/${GITHUB_REPOSITORY}" --jq .full_name >/dev/null 2>/tmp/err; then
+            cat /tmp/err
+            echo "::error::The token authenticates but cannot see ${GITHUB_REPOSITORY}. A fine-grained token must be granted this repository, with Contents and Pull requests read/write."
+            exit 1
+          fi
+          echo "Can reach ${GITHUB_REPOSITORY}. The token is good."
+
       - name: Compare
         id: compare
         env:
