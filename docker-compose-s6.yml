@@ -1,25 +1,73 @@
-# s6 layout: hbbs and hbbr supervised in one container.
+# Scheme 2 of 3 - two containers: s6 (hbbs + hbbr) and the API.
 #
-# Use rustdesk-server-s6-api instead to get the API server too; it also needs
-# port 21114 published and a volume at /app/data.
+#   rustdesk-server  ghcr.io/yuanshi76/rustdesk-server-s6
+#   rustdesk-api     lejianwen/rustdesk-api    optional, unmodified upstream
+#
+# s6 supervises hbbs and hbbr in one container: if one dies, s6 restarts that
+# process rather than the whole container.
+#
+# Differences from docker-compose.yml, both of which matter when migrating:
+#
+#   1. The server volume is /data, not /root. Point it at the same directory you
+#      used before; id_ed25519, id_ed25519.pub and db_v2.sqlite3 keep their
+#      names, so keys and the peer table carry over with nothing converted.
+#   2. There is no `command:`. hbbs is configured through RELAY; hbbr takes no
+#      arguments.
+#
+# On start the image validates the key pair with rustdesk-utils and halts if the
+# two files disagree, rather than starting with a key nobody can use.
 
 services:
   rustdesk-server:
-    container_name: rustdesk-server
-    image: ghcr.io/OWNER/rustdesk-server-s6:1.1.16-CHANGEME
-    ports:
-      - 21115:21115
-      - 21116:21116
-      - 21116:21116/udp
-      - 21117:21117
-      - 21118:21118
-      - 21119:21119
+    container_name: rustdesk_server
+    image: ghcr.io/yuanshi76/rustdesk-server-s6:v0.2.0
     environment:
       - RELAY=rustdesk.example.com:21117
-      - ENCRYPTED_ONLY=1
+      # 0 is the default and matches the classic scheme above: a key pair exists
+      # and is used for encryption, but clients are not required to present a
+      # matching key. 1 adds `-k _`, which starts REJECTING clients whose key
+      # does not match - a behaviour change, so set it deliberately.
+      - ENCRYPTED_ONLY=0
       - MUST_LOGIN=N
-      # - RUSTDESK_API_JWT_KEY=<the API server's JWT secret>
       - WS_IDLE_TIMEOUT=90
+      # - RUSTDESK_API_JWT_KEY=<shared with api>   # only meaningful with MUST_LOGIN=Y
+    ports:
+      - "21114:21114"       # rustdesk-api, published through this namespace
+      - "21115:21115"       # hbbs NAT-type test
+      - "21116:21116/tcp"   # hbbs rendezvous
+      - "21116:21116/udp"
+      - "21117:21117"       # hbbr relay
+      - "21118:21118"       # hbbs websocket
+      - "21119:21119"       # hbbr websocket
     volumes:
       - ./data:/data
+    mem_limit: 384m          # two processes share this
     restart: unless-stopped
+
+  # Drop this service if you do not use the API server.
+  rustdesk-api:
+    container_name: rustdesk-api
+    image: lejianwen/rustdesk-api:latest    # pin this too
+    environment:
+      - TZ=UTC
+      - RUSTDESK_API_RUSTDESK_ID_SERVER=rustdesk.example.com:21116
+      - RUSTDESK_API_RUSTDESK_RELAY_SERVER=rustdesk.example.com:21117
+      - RUSTDESK_API_RUSTDESK_API_SERVER=http://rustdesk.example.com:21114
+      - RUSTDESK_API_RUSTDESK_KEY=<contents of data/id_ed25519.pub>
+      - RUSTDESK_API_APP_SHOW_SWAGGER=0
+    volumes:
+      - ./api_data:/app/data
+    network_mode: "service:rustdesk-server"
+    depends_on: [rustdesk-server]
+    mem_limit: 256m
+    restart: unless-stopped
+
+# The API still shares the server's namespace, so `docker compose up -d
+# --force-recreate` remains the rule - but for one dependent rather than two.
+#
+# To decouple it completely: drop network_mode and depends_on from rustdesk-api,
+# put both services on a user-defined network, and publish "21114:21114" on
+# rustdesk-api itself. Verify one thing before trusting that: the API is
+# configured with the host's PUBLIC address, so from a bridge network it has to
+# reach the host's own published port (hairpin NAT). That works on most hosts
+# and not on all - check that peers still show as online.

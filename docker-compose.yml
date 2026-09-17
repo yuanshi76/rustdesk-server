@@ -1,49 +1,77 @@
-# Classic layout: one process per container.
+# Scheme 1 of 3 - three containers, classic image.
 #
-# Replace OWNER with the GitHub owner the images were published under, and
-# rustdesk.example.com with this host's public address.
+#   hbbs, hbbr    ghcr.io/yuanshi76/rustdesk-server   one image, two containers
+#   rustdesk-api  lejianwen/rustdesk-api              optional, unmodified upstream
 #
-# Pin a version tag rather than :latest. Automated builds never move :latest;
-# tags look like 1.1.16-a1b2c3d (upstream release - fork revision).
-
-networks:
-  rustdesk-net:
-    external: false
+# The classic image holds hbbs, hbbr and rustdesk-utils and sets no entrypoint,
+# so you run it twice and choose the process with `command:`.
+#
+# The other two schemes are docker-compose-s6.yml and docker-compose-s6-api.yml.
+# This one is the least surprising and the easiest to roll back, which makes it
+# the right starting point.
+#
+# Replace rustdesk.example.com with this host's public address, and pin the image
+# tag to a release rather than tracking a moving one.
 
 services:
   hbbs:
-    container_name: hbbs
-    image: ghcr.io/OWNER/rustdesk-server:1.1.16-CHANGEME
+    container_name: rustdesk_hbbs
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.2.0
     command: hbbs -r rustdesk.example.com:21117
     ports:
-      - 21115:21115
-      - 21116:21116
-      - 21116:21116/udp
-      - 21118:21118
+      - "21114:21114"       # rustdesk-api, published through this namespace
+      - "21115:21115"       # hbbs NAT-type test
+      - "21116:21116/tcp"   # hbbs rendezvous
+      - "21116:21116/udp"
+      - "21117:21117"       # hbbr relay
+      - "21118:21118"       # hbbs websocket (clients 1.4.1+, web client)
+      - "21119:21119"       # hbbr websocket
     environment:
-      # Refuse a connection that presents no login token. Pairs with
-      # RUSTDESK_API_JWT_KEY when the API server is in use.
-      - MUST_LOGIN=N
-      # - RUSTDESK_API_JWT_KEY=<the API server's JWT secret>
-      # Seconds a websocket may go silent before hbbs closes it.
+      # Close a websocket that has sent nothing for this long, the Pong
+      # answering the server's Ping included. A backstop, not a fix.
       - WS_IDLE_TIMEOUT=90
+      # - MUST_LOGIN=Y                            # refuse a client with no login token
+      # - RUSTDESK_API_JWT_KEY=<shared with api>  # and verify that token as a JWT
     volumes:
       - ./data:/root
-    networks:
-      - rustdesk-net
-    depends_on:
-      - hbbr
+    mem_limit: 256m
     restart: unless-stopped
 
   hbbr:
-    container_name: hbbr
-    image: ghcr.io/OWNER/rustdesk-server:1.1.16-CHANGEME
+    container_name: rustdesk_hbbr
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.2.0
     command: hbbr
-    ports:
-      - 21117:21117
-      - 21119:21119
     volumes:
       - ./data:/root
-    networks:
-      - rustdesk-net
+    network_mode: "service:hbbs"
+    depends_on: [hbbs]
+    mem_limit: 128m
     restart: unless-stopped
+
+  # Drop this service if you do not use the API server.
+  rustdesk-api:
+    container_name: rustdesk-api
+    image: lejianwen/rustdesk-api:latest    # pin this too
+    environment:
+      - TZ=UTC
+      - RUSTDESK_API_RUSTDESK_ID_SERVER=rustdesk.example.com:21116
+      - RUSTDESK_API_RUSTDESK_RELAY_SERVER=rustdesk.example.com:21117
+      - RUSTDESK_API_RUSTDESK_API_SERVER=http://rustdesk.example.com:21114
+      - RUSTDESK_API_RUSTDESK_KEY=<contents of data/id_ed25519.pub>
+      - RUSTDESK_API_APP_SHOW_SWAGGER=0
+    volumes:
+      - ./api_data:/app/data
+    network_mode: "service:hbbs"
+    depends_on: [hbbs]
+    mem_limit: 256m
+    restart: unless-stopped
+
+# WARNING. hbbr and rustdesk-api join hbbs's network namespace by container ID.
+# Recreating hbbs on its own - which any change to its config does - orphans
+# both of them, silently: they keep running with no network, and cannot restart
+# afterwards because the container ID they reference is gone. Always
+#
+#     docker compose up -d --force-recreate
+#
+# never `docker compose up -d hbbs`. docker-compose-s6.yml halves this problem
+# and docker-compose-s6-api.yml removes it.
