@@ -10,8 +10,13 @@ name: upstream-watch
 #      repository has been quiet, which counts as activity.
 #   2. A push made with GITHUB_TOKEN does not trigger other workflows, so the
 #      sync PR would sit without a CI run. Set an UPSTREAM_SYNC_TOKEN secret (a
-#      PAT with `repo` and `workflow` scope) and CI will run on the PR; without
-#      it the PR is still opened, just unchecked, and the job says so.
+#      PAT with `repo` and `workflow` scope, or a fine-grained token granted
+#      access to THIS repository) and CI will run on the PR; without it the PR
+#      is still opened, just unchecked, and the job says so.
+#
+# The PAT is used in exactly one place - opening the pull request. Every git
+# operation here uses the built-in GITHUB_TOKEN, so a missing or broken PAT
+# cannot break checkout or the keepalive commit.
 
 on:
   schedule:
@@ -72,12 +77,15 @@ jobs:
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-22.04
     steps:
+      # GITHUB_TOKEN, not the PAT. `permissions: contents: write` above covers
+      # the branch push, and the PAT is only needed to *open* the pull request
+      # - see the note at the top of this file. Using the PAT here made a bad
+      # PAT break checkout, which is a confusing place to discover it.
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           submodules: recursive
-          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Configure git
         run: |
@@ -204,11 +212,23 @@ jobs:
           Upstream diff: https://github.com/${UPSTREAM_REPO}/compare/${CURRENT}...${LATEST}
           EOT
           )
-          gh pr create \
+          # An "already exists" is fine. Anything else - a rejected token, or
+          # Actions not being permitted to open pull requests - must be loud:
+          # the branch is pushed either way, so a silent failure would look like
+          # success while nobody ever sees the PR.
+          if ! gh pr create \
             --title "Rebase onto upstream ${LATEST}" \
             --body "$BODY" \
             --base main \
-            --head "${{ steps.rebase.outputs.branch }}" || echo "PR already open"
+            --head "${{ steps.rebase.outputs.branch }}" 2>/tmp/pr.err; then
+            if grep -qi "already exists" /tmp/pr.err; then
+              echo "A pull request for this branch is already open."
+            else
+              cat /tmp/pr.err
+              echo "::error::Could not open the pull request. The rebase succeeded and ${{ steps.rebase.outputs.branch }} is pushed - open the PR by hand, and check UPSTREAM_SYNC_TOKEN."
+              exit 1
+            fi
+          fi
           if [ -z "${{ secrets.UPSTREAM_SYNC_TOKEN }}" ]; then
             echo "::warning::UPSTREAM_SYNC_TOKEN is not set, so this PR will not trigger CI. Push an empty commit to the branch, or set the secret."
           fi
@@ -247,13 +267,15 @@ jobs:
   keepalive:
     name: Keep the schedule alive
     needs: check
-    if: needs.check.outputs.changed == 'false' && github.event_name == 'schedule'
+    if: needs.check.outputs.changed == 'false'
     runs-on: ubuntu-22.04
     steps:
+      # Deliberately the built-in token: a push made with it does not trigger
+      # other workflows, which is exactly what a no-op activity commit wants.
+      # Pushing this with the PAT would start a full CI run, soak included,
+      # every time the timestamp moved.
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
 
       # GitHub disables a scheduled workflow after 60 days of repository
       # inactivity. Commit at most once a month, which is enough to reset that
@@ -274,4 +296,9 @@ jobs:
           git config user.email "upstream-watch@users.noreply.github.com"
           git add "$STAMP"
           git commit -m "chore: upstream-watch keepalive"
-          git push
+          # Lose the race rather than force anything: the next run will retry.
+          git push || {
+            echo "::warning::keepalive push rejected, probably a concurrent push; will retry next run"
+            exit 0
+          }
+          echo "Recorded $(cat "$STAMP")"
