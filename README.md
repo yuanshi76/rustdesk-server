@@ -61,8 +61,24 @@ Tags are `<upstream release>-<short revision>`, for example `1.1.16-a1b2c3d`.
 **Pin one.** `latest` is never moved by an automated build, so it may be older
 than you expect.
 
-`docker-compose.yml` and `docker-compose-s6.yml` are starting points; replace
-`OWNER` and the image tag.
+Three compose files cover the three ways to arrange them. Each explains what it
+trades away; replace `rustdesk.example.com` and pin the tag.
+
+| File | Containers | Server data | Notes |
+|---|---|---|---|
+| `docker-compose.yml` | hbbs, hbbr, api | `/root` | Least surprising, easiest to roll back. Start here. |
+| `docker-compose-s6.yml` | server, api | `/data` | s6 restarts a dead process instead of the container. |
+| `docker-compose-s6-api.yml` | one | `/data` | Tidiest, but one blast radius — and the least exercised image. |
+
+Moving between them is not a data migration: `id_ed25519`, `id_ed25519.pub` and
+`db_v2.sqlite3` keep their names, so the same host directory works at either
+mount point.
+
+Two things that bite, both documented in the files themselves: containers using
+`network_mode: service:` are orphaned when the container they attach to is
+recreated, so always `docker compose up -d --force-recreate`; and
+`ENCRYPTED_ONLY=1` starts *rejecting* clients whose key does not match, which is
+a behaviour change rather than a hardening toggle you can flip blind.
 
 ## Publishing your own images
 

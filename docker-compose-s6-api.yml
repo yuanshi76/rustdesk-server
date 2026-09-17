@@ -1,0 +1,57 @@
+# Scheme 3 of 3 - one container: hbbs, hbbr and the API, all under s6.
+#
+#   rustdesk  ghcr.io/yuanshi76/rustdesk-server-s6-api
+#
+# This is the fork's own image variant, built on lejianwen/rustdesk-api. One
+# container and one lifecycle, so no container depends on another's network
+# namespace and the recreate trap described in docker-compose.yml cannot happen.
+# s6 restarts an individual process if it dies instead of taking everything down.
+#
+# READ THIS FIRST. The image is built and tested in CI for linux/amd64 and
+# linux/arm64, but it has not been exercised at runtime the way the classic and
+# s6 images have, and it inherits a third-party base image, so it can break for
+# reasons outside this repository. Try it where you can roll back.
+#
+# Migrating from the other schemes - two volumes, pointing at the data you
+# already have, nothing converted:
+#
+#   <server data, keys + peer db> -> /data
+#   <api data>                    -> /app/data
+
+services:
+  rustdesk:
+    container_name: rustdesk
+    image: ghcr.io/yuanshi76/rustdesk-server-s6-api:v0.2.0
+    environment:
+      - TZ=UTC
+      # --- hbbs / hbbr ---
+      - RELAY=rustdesk.example.com:21117
+      - ENCRYPTED_ONLY=0     # 1 starts REJECTING clients without a matching key
+      - MUST_LOGIN=N
+      - WS_IDLE_TIMEOUT=90
+      # --- API server ---
+      - RUSTDESK_API_RUSTDESK_ID_SERVER=rustdesk.example.com:21116
+      - RUSTDESK_API_RUSTDESK_RELAY_SERVER=rustdesk.example.com:21117
+      - RUSTDESK_API_RUSTDESK_API_SERVER=http://rustdesk.example.com:21114
+      - RUSTDESK_API_RUSTDESK_KEY=<contents of data/id_ed25519.pub>
+      - RUSTDESK_API_APP_SHOW_SWAGGER=0
+    ports:
+      - "21114:21114"       # API
+      - "21115:21115"       # hbbs NAT-type test
+      - "21116:21116/tcp"   # hbbs rendezvous
+      - "21116:21116/udp"
+      - "21117:21117"       # hbbr relay
+      - "21118:21118"       # hbbs websocket
+      - "21119:21119"       # hbbr websocket
+    volumes:
+      - ./data:/data
+      - ./api_data:/app/data
+    mem_limit: 512m          # three processes share this
+    restart: unless-stopped
+
+# With one container `docker compose up -d` is safe; there is nothing to orphan.
+#
+# The trade-off is blast radius. One container means a pull that breaks the API
+# base image takes the rendezvous server with it, where in the other two schemes
+# the API can fail on its own. If hbbs staying reachable matters more than tidy
+# packaging, prefer docker-compose-s6.yml.
