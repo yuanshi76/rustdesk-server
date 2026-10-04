@@ -347,13 +347,36 @@ ws peers registered              0                         -
 ip-blocker entries            4390                         -
 ```
 
-The RSS is the only number that is not flat, and it is `IP_BLOCKER`, not a leak.
-That map is keyed by source IP and is pruned only after a day, and this test
-gives *every connection* a distinct source address on purpose — that is what
-makes the leak visible at all. 4390 entries for 4400-odd connections at the
-moment of the census, roughly 2 MB, which is the whole of the growth. Production
-sees five client IPs and would accumulate five entries. Measured rather than
-assumed: the console's `ib` command printed the count.
+The RSS is the only number that is not flat. **An earlier version of this section
+attributed all of it to `IP_BLOCKER` ("the whole of the growth"). That was an
+inference from the entry count, and a control run on 2026-10-04 does not support
+it.** What is actually known:
+
+| Run | Connections | RSS | Descriptors |
+|---|---|---|---|
+| 60 min, every connection a new source address (macOS) | 5070 | 15376 -> 17392 kB (+2.0 MB, ~0.4 kB per connection) | 25 -> 25 |
+| 10 min in CI (Linux) | 850 | 11654 -> 11986 kB (+0.3 MB) | 18, with two single-sample spikes |
+| **control**: 20 min, each client cycling through a **bounded** pool of 50 addresses, so the per-IP table cannot grow past 500 entries (macOS) | 1690 | 14768 -> 15344 kB (+0.6 MB): flat for the first ~12 min, then a step | 25 -> 25 |
+
+If `IP_BLOCKER` were all of the growth, the control's RSS should have stopped
+rising once its pool filled, about six minutes in. It kept rising, by a similar
+amount per connection. So `IP_BLOCKER` is not the whole explanation, and I do not
+know what the rest is. It is stepwise rather than steady, which is also what a
+malloc that does not return pages looks like on macOS, and 20 minutes is too short
+and RSS too coarse to tell slow growth from that.
+
+What can be said, INFERRED: even taking the worst slope seen (~0.4 kB per
+connection) at the production host's observed rate of about 2300 connections a day
+gives under 1 MB a day, against the 13 MB a day of the leak. From a ~15 MB start
+that is roughly 200 days to reach the ~205 MB at which `hbbs` was OOM-killed. That
+is arithmetic on two short runs, not a measurement of production, and it assumes
+the fixed build no longer churns connections at the old rate.
+
+What would settle it: a bounded-pool run of several hours on **Linux**, which is
+what production runs and where RSS behaves differently, or a heap profile. Not
+done. `SOAK_IP_POOL=50` in `tests/ws_soak.rs` is the control to use.
+
+The descriptor count is the leak signal, and it did not move in any run.
 
 `ws peers: 0` is the registry the fix rewrote, empty after thousands of
 connections, which is the property the whole change is about.
@@ -516,6 +539,22 @@ first (commit `09cdcc7`):
 **Not verified: any real client session.** What exists is a reading of the client's
 source and a test that replays its logic. The 1.4.x / 1.5.0 matrix and the
 `--deploy` check in Phase 7 need real clients, and are blocked on that.
+
+### Per-IP registration limiter (upstream behaviour, found by a failed control run)
+
+`check_ip_blocker` counts registrations per source address and refuses the 31st
+unless a full 60 s passes with none counted: the timestamp is refreshed on every
+counted request, so an address that registers more often than once a minute is
+blocked after 31, and recovers only after a minute of quiet. VERIFIED: a soak that
+reused one address per client, registering every 7 s, was refused at 210 s = 30
+registrations, and every driver died.
+
+INFERRED, not observed: anything that makes many clients present one address is
+exposed to this. Two cases matter here. A reverse proxy in front of the websocket
+port that does not forward `X-Real-IP` makes every client look like the proxy.
+And many clients behind one NAT, such as a school, share an address. The first
+needs the proxy to pass the header, which this server already trusts
+unvalidated (upstream issue #634, so the port must not be reachable directly).
 
 ### `hbb_common`
 
