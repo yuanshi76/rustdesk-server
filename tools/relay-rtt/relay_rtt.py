@@ -410,6 +410,173 @@ def cmd_report(a):
           "session quality. Treat a margin of <20 % as a tie.")
 
 
+# ------------------------------------------------------------------ routes
+def read_sites(path):
+    """sites file: `label CIDR[,CIDR ...]`, '#' comments. Returns
+    [(label, [network, ...])]. A CIDR with host bits set is accepted and
+    normalised, so `203.0.113.77/24` means 203.0.113.0/24."""
+    sites, seen = [], set()
+    with open(path, encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = line.replace(",", " ").split()
+            if len(parts) < 2:
+                sys.exit(f"{path}:{ln}: need `label CIDR [CIDR ...]`")
+            label, nets = parts[0], []
+            if label in seen:
+                sys.exit(f"{path}:{ln}: site {label!r} appears twice")
+            seen.add(label)
+            for text in parts[1:]:
+                try:
+                    nets.append(ipaddress.ip_network(text, strict=False))
+                except ValueError:
+                    sys.exit(f"{path}:{ln}: {text!r} is not a network such as "
+                             "203.0.113.0/24")
+            sites.append((label, nets))
+    if not sites:
+        sys.exit("no sites in " + path)
+    return sites
+
+
+def relay_names(rows):
+    """node id -> the `host:port` string hbbs must be started with, or a clash."""
+    names = {}
+    for r in rows:
+        name = f"{r['host']}:{r['port']}".lower()
+        prev = names.setdefault(r["node"], name)
+        if prev != name:
+            sys.exit(f"node {r['node']!r} was measured as both {prev} and {name}; "
+                     "the CSVs mix two different nodes files")
+    return names
+
+
+def site_values(rows, site, a, notes):
+    """node -> milliseconds for one site, by the chosen basis.
+
+    A static table cannot know the time of day, so the default is the WORSE of
+    peak and off-peak: a relay that is excellent at 10:00 and poor at 21:00 is
+    ranked by its 21:00. `all` ranks by the overall median instead, which hides an
+    evening-only collapse; `peak` ranks by the evening alone."""
+    mine = [r for r in rows if r["site"] == site]
+
+    def values(subset):
+        out = {}
+        for (_, node), g in aggregate(subset).items():
+            if g["usable"] and g["median"] is not None:
+                out[node] = (g["median"] + a.loss_penalty * g["loss"], g["runs"])
+        return out
+
+    overall = values(mine)
+    if a.basis == "all":
+        return {n: v for n, (v, _) in overall.items()}
+
+    hours = parse_hours(a.peak_hours)
+    peak = [r for r in mine if local_hour(r) in hours]
+    off = [r for r in mine if local_hour(r) is not None and local_hour(r) not in hours]
+    vp, vo = values(peak), values(off)
+    out = {}
+    for node, (v_all, _) in overall.items():
+        have_p = node in vp and vp[node][1] >= a.min_runs
+        have_o = node in vo and vo[node][1] >= a.min_runs
+        if a.basis == "peak" and have_p:
+            out[node] = vp[node][0]
+        elif a.basis == "worst" and have_p and have_o:
+            out[node] = max(vp[node][0], vo[node][0])
+        else:
+            out[node] = v_all
+            notes.append(f"{site}->{node}: fewer than {a.min_runs} runs in "
+                         f"{'the evening' if a.basis == 'peak' or not have_p else 'off-peak'}"
+                         f"; used the overall median instead of the {a.basis} basis")
+    return out
+
+
+def cmd_routes(a):
+    rows = load(a.files)
+    if not rows:
+        sys.exit("no rows")
+    sites = read_sites(a.sites)
+    names = relay_names(rows)
+    notes = []
+
+    # Never write a number measured through a proxy.
+    fake = fake_ip_cells(rows)
+    if fake:
+        for s_, n in sorted(fake):
+            notes.append(f"{s_}->{n}: resolved into 198.18.0.0/15 (proxy/TUN "
+                         "fake-IP); that measurement was discarded")
+        rows = [r for r in rows if (r["site"], r["node"]) not in fake]
+
+    measured = {r["site"] for r in rows}
+    for label in sorted(measured - {l for l, _ in sites}):
+        notes.append(f"site {label!r} has measurements but is not in {a.sites}; "
+                     "it gets no line")
+
+    per_site, lines = {}, []
+    for label, nets in sites:
+        if label not in measured:
+            notes.append(f"site {label!r} is in {a.sites} but has no usable "
+                         "measurements; it gets no line")
+            continue
+        vals = site_values(rows, label, a, notes)
+        if not vals:
+            notes.append(f"site {label!r}: no node answered reliably; it gets no line")
+            continue
+        per_site[label] = vals
+        lines.append((label, nets, vals))
+
+    default = None
+    if a.default == "average" and per_site:
+        common = set.intersection(*(set(v) for v in per_site.values()))
+        if common:
+            default = {n: sum(v[n] for v in per_site.values()) / len(per_site)
+                       for n in common}
+        else:
+            notes.append("--default average: no relay was measured from every site")
+    elif a.default not in ("none", "average"):
+        if a.default in per_site:
+            default = per_site[a.default]
+        else:
+            sys.exit(f"--default {a.default!r} is not a site with measurements")
+
+    def entry(vals):
+        order = sorted(vals.items(), key=lambda kv: (kv[1], kv[0]))
+        return ",".join(f"{names[n]}={v:.1f}" for n, v in order)
+
+    out = ["# Relay routing table, generated by relay_rtt.py routes.",
+           f"# basis: {a.basis}"
+           + (f" (peak hours {a.peak_hours}, site-local)" if a.basis != "all" else "")
+           + f"; loss counted as {a.loss_penalty:g} ms per 1%.",
+           "# Each relay must be written exactly as hbbs was started with it (-r).",
+           "# Format: network  relay=ms[,relay=ms ...]", ""]
+    for label, nets, vals in lines:
+        out.append(f"# {label}")
+        for net in nets:
+            out.append(f"{net}  {entry(vals)}")
+    if default:
+        out += ["", "# anything else: " + ("the average of all sites"
+                if a.default == "average" else f"as {a.default}")]
+        out += [f"0.0.0.0/0  {entry(default)}", f"::/0  {entry(default)}"]
+    if not lines:
+        sys.exit("nothing to write: no site had usable measurements\n"
+                 + "\n".join("  - " + n for n in notes))
+    text = "\n".join(out) + "\n"
+    with open(a.out, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+    print(f"wrote {a.out}: {len(lines)} site(s)"
+          + (", plus a default" if default else ""))
+    for label, _, vals in lines:
+        order = sorted(vals.items(), key=lambda kv: kv[1])
+        print(f"  {label:<14}" + "  ".join(f"{names[n]} {v:.0f} ms" for n, v in order))
+    if notes:
+        print("\nNotes:")
+        for n in notes:
+            print("  - " + n)
+    print("\nCheck it on the server with:  test-relay <ip-at-site-A> <ip-at-site-B>")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -440,6 +607,24 @@ def main():
     r.add_argument("--min-runs", type=int, default=3,
                    help="with --periods, flag a cell with fewer runs than this")
     r.set_defaults(fn=cmd_report)
+
+    t = sub.add_parser("routes", help="turn measurements into hbbs's routing table")
+    t.add_argument("files", nargs="+", help="CSV files from `probe`")
+    t.add_argument("--sites", required=True,
+                   help="file mapping each site label to its public network(s)")
+    t.add_argument("--out", default="relay_routes.txt")
+    t.add_argument("--basis", choices=["worst", "peak", "all"], default="worst",
+                   help="which figure ranks a relay (default: the worse of peak "
+                        "and off-peak)")
+    t.add_argument("--peak-hours", default="19-23")
+    t.add_argument("--min-runs", type=int, default=3,
+                   help="runs needed in a period before trusting it")
+    t.add_argument("--loss-penalty", type=float, default=10.0,
+                   help="ms added per 1%% mean loss")
+    t.add_argument("--default", default="none",
+                   help="line for clients matching no site: none, average, or a "
+                        "site label to copy")
+    t.set_defaults(fn=cmd_routes)
 
     a = ap.parse_args()
     if getattr(a, "samples", 1) < 1:

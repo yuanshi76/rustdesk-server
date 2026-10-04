@@ -27,6 +27,18 @@ trip. It does not measure throughput.
 
        python3 relay_rtt.py report results/*.csv --pair home school --periods
 
+## From measurements to a routing table
+
+Once you have the CSVs, one more command writes the file `hbbs` reads, from a small
+`sites.txt` you fill in (copy `sites.example.txt`: it maps each place to the public
+network it connects from, and says how to find it):
+
+    python3 relay_rtt.py routes results/*.csv --sites sites.txt --out relay_routes.txt
+
+It ranks each relay by the worse of its evening and daytime figure, adds a penalty
+for packet loss, and never writes a number measured through a proxy. The whole
+procedure, and how to give the file to `hbbs`, is in `docs/relay-routing.md`.
+
 ## Why `--periods`
 
 The hypothesis behind this whole exercise is that long-haul paths congest in the

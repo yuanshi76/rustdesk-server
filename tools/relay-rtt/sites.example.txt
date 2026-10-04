@@ -1,0 +1,10 @@
+# label   public network(s) the clients at that place connect from
+#
+# Find a site's address by running, FROM that site (with any proxy/VPN off):
+#       curl https://ifconfig.me
+# then write the /24 around it for IPv4 (203.0.113.57 -> 203.0.113.0/24), or the
+# /48 for IPv6. A wider network such as /16 also matches strangers' addresses,
+# which only means they get the same preference; it does no harm, but it is a
+# guess. A home line can change address: re-check now and then.
+home      203.0.113.0/24
+school    198.51.100.0/24, 2001:db8:1234::/48

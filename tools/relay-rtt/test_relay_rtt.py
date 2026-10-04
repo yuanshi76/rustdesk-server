@@ -243,6 +243,133 @@ class Periods(unittest.TestCase):
         self.assertIn("only 2 run(s) in this period", text)
 
 
+SAMPLE_FIXTURE = os.path.join(HERE, "testdata", "routes-sample.txt")
+
+
+def run_routes(d, rows, sites_text, *extra):
+    """Run `routes` in-process; return (stdout, exit code, file text or None)."""
+    csv_path = write_csv(d, "m.csv", rows)
+    sites = write_nodes(d, sites_text)  # same plain-text writer
+    out = os.path.join(d, "routes.txt")
+    old, buf, code = sys.argv, io.StringIO(), None
+    sys.argv = ["relay_rtt.py", "routes", csv_path, "--sites", sites, "--out", out,
+                *extra]
+    try:
+        with contextlib.redirect_stdout(buf):
+            rr.main()
+    except SystemExit as e:
+        code = e.code
+    finally:
+        sys.argv = old
+    text = open(out, encoding="utf-8").read() if os.path.exists(out) else None
+    return buf.getvalue(), code, text
+
+
+def node_rows(site, node, host, port, peak, off, offset=480, days=4, off_per_day=3,
+              loss=0.0, ip="203.0.113.7"):
+    """Evening runs at 20:00 site-local and off-peak runs at 10:00, UTC+8."""
+    rows = []
+    for day in range(1, days + 1):
+        for _ in range(off_per_day):
+            rows.append(row(site, node, off, f"2026-01-0{day}T02:00:00Z", offset,
+                            host=host, port=port, ip=ip, loss_pct=loss))
+        rows.append(row(site, node, peak, f"2026-01-0{day}T12:00:00Z", offset,
+                        host=host, port=port, ip=ip, loss_pct=loss))
+    return rows
+
+
+SITES = "home    203.0.113.0/24\nschool  198.51.100.0/24, 2001:db8:1::/48\n"
+
+
+def sample_rows():
+    rows = []
+    for site, hk, sh, fra in (("home", (38, 40), (95, 96), (210, 205)),
+                              ("school", (80, 82), (12, 14), (190, 185))):
+        rows += node_rows(site, "hk", "hk.example.com", 31107, *hk)
+        rows += node_rows(site, "sh", "sh.example.com", 31107, *sh)
+        rows += node_rows(site, "fra", "fra.example.com", 31107, *fra)
+    return rows
+
+
+class Routes(unittest.TestCase):
+    def line(self, text, net):
+        return [ln for ln in text.splitlines() if ln.startswith(net)][0]
+
+    def test_worst_of_peak_and_off_peak_beats_the_overall_median(self):
+        rows = (node_rows("home", "hk", "hk.example.com", 31107, peak=120, off=40)
+                + node_rows("home", "sh", "sh.example.com", 31107, peak=70, off=70))
+        with tempfile.TemporaryDirectory() as d:
+            _, _, worst = run_routes(d, rows, "home 203.0.113.0/24\n")
+            _, _, plain = run_routes(d, rows, "home 203.0.113.0/24\n", "--basis", "all")
+        # hk is brilliant by day and poor in the evening; the overall median hides
+        # that, so ranked by it hk wins. A static table must not walk into it.
+        self.assertEqual(self.line(plain, "203.0.113.0/24"),
+                         "203.0.113.0/24  hk.example.com:31107=40.0,sh.example.com:31107=70.0")
+        self.assertEqual(self.line(worst, "203.0.113.0/24"),
+                         "203.0.113.0/24  sh.example.com:31107=70.0,hk.example.com:31107=120.0")
+
+    def test_loss_is_priced_in(self):
+        rows = (node_rows("home", "hk", "hk.example.com", 31107, 20, 20, loss=2.0)
+                + node_rows("home", "sh", "sh.example.com", 31107, 35, 35))
+        with tempfile.TemporaryDirectory() as d:
+            _, _, text = run_routes(d, rows, "home 203.0.113.0/24\n")
+        # hk: 20 + 2% * 10 ms = 40, which loses to sh at 35.
+        self.assertIn("sh.example.com:31107=35.0,hk.example.com:31107=40.0", text)
+
+    def test_a_proxy_measurement_is_never_written(self):
+        rows = (node_rows("home", "hk", "hk.example.com", 31107, 0.4, 0.4, ip="198.18.0.9")
+                + node_rows("home", "sh", "sh.example.com", 31107, 60, 60))
+        with tempfile.TemporaryDirectory() as d:
+            out, _, text = run_routes(d, rows, "home 203.0.113.0/24\n")
+        self.assertNotIn("hk.example.com", text)
+        self.assertIn("sh.example.com:31107=60.0", text)
+        self.assertIn("fake-IP", out)
+
+    def test_sites_without_data_and_data_without_sites_are_reported(self):
+        rows = node_rows("home", "hk", "hk.example.com", 31107, 30, 30) \
+            + node_rows("cafe", "hk", "hk.example.com", 31107, 30, 30)
+        with tempfile.TemporaryDirectory() as d:
+            out, _, text = run_routes(d, rows, "home 203.0.113.0/24\nschool 198.51.100.0/24\n")
+        self.assertIn("site 'school' is in", out)
+        self.assertIn("site 'cafe' has measurements but is not in", out)
+        self.assertNotIn("198.51.100.0/24", text)
+
+    def test_a_thin_evening_falls_back_and_says_so(self):
+        rows = node_rows("home", "hk", "hk.example.com", 31107, 120, 40, days=2)
+        with tempfile.TemporaryDirectory() as d:
+            out, _, text = run_routes(d, rows, "home 203.0.113.0/24\n")
+        self.assertIn("used the overall median", out)
+        self.assertIn("hk.example.com:31107=40.0", text)  # not 120: it is not trusted
+
+    def test_default_line_is_the_average_when_asked(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, _, text = run_routes(d, sample_rows(), SITES, "--default", "average")
+        # hk: (40 + 82) / 2 = 61 ; sh: (96 + 14) / 2 = 55
+        self.assertIn("0.0.0.0/0  sh.example.com:31107=55.0,hk.example.com:31107=61.0", text)
+        self.assertIn("::/0  ", text)
+
+    def test_bad_sites_files_are_refused_with_the_line_number(self):
+        for text, want in (("home\n", "need `label CIDR"),
+                           ("home 203.0.113.0/99\n", "not a network"),
+                           ("home 10.0.0.0/8\nhome 10.1.0.0/16\n", "appears twice")):
+            with tempfile.TemporaryDirectory() as d:
+                _, code, written = run_routes(d, sample_rows(), text)
+            self.assertIn(want, str(code), text)
+            self.assertIsNone(written, "a refused sites file must not leave a table")
+
+    def test_the_two_languages_agree_on_the_format(self):
+        # The Python tool writes the table and the Rust server reads it. This pins
+        # the sample the Rust unit test parses (src/relay_routes.rs) to what the tool
+        # really produces, so neither side can drift alone.
+        with tempfile.TemporaryDirectory() as d:
+            _, _, text = run_routes(d, sample_rows(), SITES, "--default", "average")
+        if os.environ.get("UPDATE_FIXTURE"):
+            with open(SAMPLE_FIXTURE, "w", encoding="utf-8") as f:
+                f.write(text)
+        with open(SAMPLE_FIXTURE, encoding="utf-8") as f:
+            self.assertEqual(text, f.read(), "run with UPDATE_FIXTURE=1 if intended")
+
+
 class EndToEnd(unittest.TestCase):
     """Real sockets on loopback: probe -> CSV -> report, through the CLI."""
 

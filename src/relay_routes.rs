@@ -346,6 +346,43 @@ mod tests {
         }
     }
 
+    /// The file `relay_rtt.py routes` produced for the sample measurements in
+    /// tools/relay-rtt. The Python tests pin it to what the tool really writes;
+    /// this pins it to what this parser really reads, so neither side can drift.
+    const GENERATED: &str = include_str!("../tools/relay-rtt/testdata/routes-sample.txt");
+
+    #[test]
+    fn the_file_the_measurement_tool_writes_is_the_file_this_parser_reads() {
+        let t = RouteTable::parse(GENERATED).unwrap();
+        // home, school (IPv4 and IPv6), and the two default lines.
+        assert_eq!(t.rule_count(), 5);
+        let healthy = relays(&[
+            "hk.example.com:31107",
+            "sh.example.com:31107",
+            "fra.example.com:31107",
+        ]);
+        let pick = |a: &str, b: &str| t.choose(&healthy, ip(a), ip(b)).unwrap();
+
+        // Both at home: hk 40 + 40 beats sh 96 + 96.
+        assert_eq!(
+            pick("203.0.113.5", "203.0.113.99").relay,
+            "hk.example.com:31107"
+        );
+        // home <-> school: hk 40 + 82 = 122, sh 96 + 14 = 110.
+        let c = pick("203.0.113.5", "198.51.100.7");
+        assert_eq!(
+            (c.relay.as_str(), c.cost_ms),
+            ("sh.example.com:31107", 110.0)
+        );
+        // The school's IPv6 network is in the table too.
+        assert_eq!(
+            pick("2001:db8:1::7", "2001:db8:1::8").relay,
+            "sh.example.com:31107"
+        );
+        // Two strangers fall through to the generated default.
+        assert_eq!(pick("192.0.2.1", "192.0.2.2").relay, "sh.example.com:31107");
+    }
+
     #[test]
     fn comments_blank_lines_and_trailing_comments_are_ignored() {
         let t = RouteTable::parse("\n# c\n\n10.0.0.0/8 a:1=5 # trailing\n").unwrap();

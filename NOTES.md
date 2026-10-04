@@ -648,6 +648,60 @@ Not exercised: the conflict path (an issue with the merge output), the
 submodule-pointer branch (the simulated release kept the pointer), and a real
 upstream release.
 
+### Relay routing, built (2026-10-04)
+
+The user runs one relay today and will add more, so the Phase 8 problem is
+theirs to have soon. They chose a hand-made table over a geographic database or live
+measurement: for ~14 peers in a few known places, a table keyed by client network
+is a smaller patch, needs no database or licence, and uses real measurements. The
+plan's decision rule ("measure first") is kept as the way to *write* the table.
+
+What exists: `src/relay_routes.rs` (the pure table and cost function),
+`RELAY_ROUTES` / `RELAY_PIN_TTL` in `hbbs`, `test-relay` and `relay-routes` console
+commands, and `relay_rtt.py routes`, which generates the table from `probe` CSVs
+and a `sites.txt`. Procedure in `docs/relay-routing.md`.
+
+Design, with the reasons:
+
+- **Cost is the sum of both legs**, as the plan says, so the table holds one number
+  per (network, relay) and the server adds the two ends. Symmetric in the ends.
+- **One decision per attempt**, held per pair of addresses for 30 s (not per
+  `(controller, target id)` as the plan proposed: the `RelayResponse` call site
+  does not have the target's id, but has both addresses). Dropped when the relay
+  stops being healthy and when the table reloads, so an edit applies to the next
+  attempt.
+- **Fail soft.** A missing or malformed file is reported once with its line number
+  and the previous table, or round-robin, stays. A broken table cannot block a
+  connection. Unset, the only change from stock is the pin.
+- **The generator ranks by the worse of peak and off-peak** by default, because a
+  static table cannot know the time of day and the overall median hides an evening
+  collapse. It never writes a measurement taken through a fake-IP proxy.
+
+Two bugs found by the tests written for it, both upstream behaviour:
+
+1. **The live relay list was stale for long-lived connections.** It was an `Arc`
+   the health check replaced on the main server object, while each connection runs
+   on a clone taken when it opened. A websocket, which 1.4.1+ clients keep open,
+   kept the list it was born with and never learned a relay had died. Now shared.
+2. **The health check scrambled the configured order.** It probes concurrently and
+   returned survivors in completion order (four relays came back 3,2,1,4). Order is
+   the tie-break and the only way to say "prefer this one". Restored.
+
+A test hole worth recording: with one relay left the picker returns it without
+consulting a pin, so a two-relay test cannot tell whether a pin checks health. The
+health test uses three, and a mutation (a pin that ignores health) is what showed it.
+
+Verified against the client source, not assumed: a *controlled* machine that has its
+own `relay-server` option set uses it instead of the server's choice, and that is
+the relay the controlling side is told (`rendezvous_mediator.rs`,
+`get_relay_server`). The plan implied this applies to clients generally; it is the
+controlled side. The controlling side's own setting did not appear in the connection
+code read.
+
+Not done, deliberately: live measurement and a scorer process, a geographic
+database, exploration traffic. The table is the 80% case for a few known places; the
+rest waits on whether the measurements show it is needed.
+
 ### What is still open
 
 | Item | State |
@@ -656,4 +710,4 @@ upstream release.
 | Phase 6: report the leak | Drafted (`docs/leak-report.md`), unfiled. The leak is the fork's, not upstream's. |
 | Phase 7 matrix, `--deploy` check, Phase 10 | Need real 1.4.x and 1.5.0 clients. |
 | Phase 9 campaign | Tool ready. Needs the real node list and the sites to run from. Everything in Phase 8 waits on it, per the plan's own decision rule: if the best node is within ~20% of the second best for every pair that matters, relay selection is not worth building. |
-| Phase 8 | Not started, deliberately. Read-first is done (above). |
+| Phase 8 | **Built as a hand-made routing table** with per-attempt pinning (above). Not done: live measurement, geographic data. Not exercised: a real multi-relay deployment, which needs a second relay server. |

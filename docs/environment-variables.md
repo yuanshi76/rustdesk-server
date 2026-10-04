@@ -50,6 +50,8 @@ in the inherited process environment.
 | `MAX_DATABASE_CONNECTIONS` 🅴 | *(none)* | `1` | Size of the SQLite connection pool. |
 | `MUST_LOGIN` 🅴 | `--must-login` | `N` | **Fork feature.** `Y` refuses a connection request that carries no login token. Set `RUSTDESK_API_JWT_KEY` as well to have the token verified rather than merely required. At runtime, send `must-login Y` or `must-login N` to the `hbbs` [loopback console](#runtime-console). |
 | `RUSTDESK_API_JWT_KEY` 🅴 | *(none)* | *(empty)* | **Fork feature.** Shared HS256 secret used to verify the login token, the same value the companion [rustdesk-api](https://github.com/lejianwen/rustdesk-api) server signs with. Read once, at first use. With `MUST_LOGIN=Y` and this unset, any non-empty token is accepted. |
+| `RELAY_ROUTES` 🅴 | `--relay-routes` | *(none)* | **Fork feature.** File mapping client networks to the relay nearest them, used to pick among several `-r` relays. Re-read when it changes. See [relay-routing.md](relay-routing.md). |
+| `RELAY_PIN_TTL` 🅴 | `--relay-pin-ttl` | `30` | **Fork feature.** Seconds one connection attempt's relay is held, so every question about it gets one answer. `0` turns holding off. |
 | `WS_IDLE_TIMEOUT` 🅴 | `--ws-idle-timeout` | `90` | **Fork feature.** Seconds a websocket may go without a single inbound frame - including the Pong answering the server's Ping - before `hbbs` closes it. A backstop against a peer that vanishes without sending FIN. Send `ws-peers` to the console to see how many websocket peers are currently registered. |
 
 🅴 = set through the inherited process environment.
@@ -144,6 +146,10 @@ The same `--network container:` form should reach `hbbr`'s console on its relay
 port (not tried here). A container that shares another's namespace, such as the
 API in the compose examples, already has the right loopback, if its image has a
 shell and `nc`.
+
+The fork adds `test-relay <ip1> [<ip2>]`, which says which relay would be chosen
+for a session between two addresses and each relay's total cost, changing nothing;
+and `relay-routes`, which reports the routing table's state.
 
 Not every command in `h` does something: `reload-geo(rg)` is listed but has no
 handler, and `test-geo(tg)` just prints what the round-robin relay picker would
