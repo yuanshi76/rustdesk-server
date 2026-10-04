@@ -307,6 +307,9 @@ impl RendezvousServer {
                 "N"
             }
         );
+        if MUST_LOGIN.load(Ordering::SeqCst) {
+            warn_if_login_unverifiable();
+        }
         if test_addr.to_lowercase() != "no" {
             let test_addr = if test_addr.is_empty() {
                 listener.local_addr()?
@@ -1405,7 +1408,11 @@ impl RendezvousServer {
             }
             Some("must-login" | "ml") => {
                 if let Some(v) = fds.next() {
-                    MUST_LOGIN.store(v.to_uppercase() == "Y", Ordering::SeqCst);
+                    let on = v.to_uppercase() == "Y";
+                    MUST_LOGIN.store(on, Ordering::SeqCst);
+                    if on {
+                        warn_if_login_unverifiable();
+                    }
                 } else {
                     let _ = writeln!(res, "MUST_LOGIN: {:?}", MUST_LOGIN.load(Ordering::SeqCst));
                 }
@@ -1740,6 +1747,19 @@ impl RendezvousServer {
             }
         }
         false
+    }
+}
+
+/// MUST_LOGIN only checks that the punch-hole request carries a token. Whether
+/// the token is any good is checked against RUSTDESK_API_JWT_KEY, and with no key
+/// that check is skipped, so any non-empty string gets in. Changing this to
+/// refuse would break setups that run it that way today; say so loudly instead.
+fn warn_if_login_unverifiable() {
+    if jwt::SECRET.is_empty() {
+        log::warn!(
+            "MUST_LOGIN=Y but RUSTDESK_API_JWT_KEY is not set: any non-empty token is \
+             accepted, not just a valid one. Set the key to have tokens verified."
+        );
     }
 }
 
