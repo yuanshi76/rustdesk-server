@@ -6,7 +6,22 @@
 //!     cargo test --release --test ws_soak -- --ignored --nocapture
 //!
 //! Tunables (environment): SOAK_MINUTES (default 60), SOAK_CONCURRENCY
-//! (default 10), SOAK_RECONNECT_MS (default 7000), SOAK_SAMPLE_SEC (default 30).
+//! (default 10), SOAK_RECONNECT_MS (default 7000), SOAK_SAMPLE_SEC (default 30),
+//! SOAK_IP_POOL (default 0).
+//!
+//! By default every connection claims a new source address. That is what exposes
+//! the leak (the registry is keyed by address, so a reused address replaces the
+//! previous entry and hides it), and it makes hbbs's per-IP anti-abuse table grow
+//! by one entry per connection, which is the only RSS growth this test sees.
+//! SOAK_IP_POOL=N instead cycles each client through N addresses: that table then
+//! stays at a fixed size, and on a build that does not leak, RSS should stay flat.
+//! It is the control for that growth and must NOT be used to judge whether a build
+//! leaks.
+//!
+//! Do not set the pool to 1, or to anything where one address recurs more often
+//! than once a minute: hbbs counts registrations per address and refuses the 31st
+//! unless a full 60 s passes without one, so a single reused address is blocked
+//! after 31 * SOAK_RECONNECT_MS. N * reconnect must exceed 60 s.
 //!
 //! Every connection registers its public key, because that is what a real
 //! client does on a fresh websocket and it is the path the leak was on - the
@@ -87,7 +102,7 @@ fn spawn_hbbs(dir: &std::path::Path) -> Server {
 /// Registering on every connection is the point - see the note at the top of
 /// the file. The id pool is fixed, so the peer table does not grow and any
 /// memory growth is the leak rather than legitimate bookkeeping.
-async fn churn(client: usize, reconnect: Duration, until: Instant) -> u64 {
+async fn churn(client: usize, reconnect: Duration, until: Instant, pool: usize) -> u64 {
     use hbb_common::futures_util::SinkExt;
     let mut connections = 0u64;
     let id = format!("soak-{client:03}");
@@ -102,7 +117,11 @@ async fn churn(client: usize, reconnect: Duration, until: Instant) -> u64 {
         // in 60 seconds.
         //
         // The peer id pool stays fixed, so the peer table does not grow.
-        let n = connections;
+        let n = if pool == 0 {
+            connections
+        } else {
+            connections % pool as u64
+        };
         let ip = format!("10.{}.{}.{}", client % 256, (n / 256) % 256, n % 256);
         let mut ws = connect(WS_PORT, Some(&ip)).await;
         register_pk(&mut ws, &id).await;
@@ -136,6 +155,7 @@ async fn resident_memory_and_descriptors_stay_flat() {
     let clients: usize = env_or("SOAK_CONCURRENCY", 10);
     let reconnect = Duration::from_millis(env_or("SOAK_RECONNECT_MS", 7000));
     let sample_every = Duration::from_secs(env_or("SOAK_SAMPLE_SEC", 30));
+    let pool: usize = env_or("SOAK_IP_POOL", 0);
 
     let dir = std::env::temp_dir().join(format!("hbbs-soak-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -148,7 +168,7 @@ async fn resident_memory_and_descriptors_stay_flat() {
     let until = Instant::now() + Duration::from_secs(minutes * 60);
     let mut drivers = Vec::new();
     for c in 0..clients {
-        drivers.push(tokio::spawn(churn(c, reconnect, until)));
+        drivers.push(tokio::spawn(churn(c, reconnect, until, pool)));
     }
 
     println!("elapsed_s,rss_kb,fds");
