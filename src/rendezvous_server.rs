@@ -2042,7 +2042,8 @@ fn warn_if_login_unverifiable() {
     if jwt::SECRET.is_empty() {
         log::warn!(
             "MUST_LOGIN=Y but RUSTDESK_API_JWT_KEY is not set: any non-empty token is \
-             accepted, not just a valid one. Set the key to have tokens verified."
+             accepted, not just a valid one. Set the key, and the same key on the \
+             API server, to have tokens verified."
         );
     }
 }

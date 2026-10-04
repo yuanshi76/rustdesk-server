@@ -42,6 +42,17 @@ says what was kept from the fork, what was dropped, and why.
 | Websocket clients | `RegisterPk` / `RegisterPeer` / `OnlineRequest` over TCP and websockets, for clients 1.4.1 and newer |
 | Encrypted TCP rendezvous | `KeyExchange`, then a secretbox-encrypted connection |
 | `WS_IDLE_TIMEOUT` | Close a websocket that has gone silent |
+| `RELAY_ROUTES`, `RELAY_PIN_TTL` | With several relays: a routing table you write saying which relay is nearest which clients, and one relay per connection attempt. See [docs/relay-routing.md](docs/relay-routing.md) |
+
+More detail, by question:
+
+| If you want to know | Read |
+|---|---|
+| How to run several relay servers and choose the nearest | [docs/relay-routing.md](docs/relay-routing.md) |
+| How the API server relates to `hbbs` and `hbbr`, and the login-token trap | [docs/api-server.md](docs/api-server.md) |
+| Every setting and console command, and how to reach the console in a container | [docs/environment-variables.md](docs/environment-variables.md) |
+| What was found, measured and decided, including mistakes | [NOTES.md](NOTES.md) |
+| How to fill in the client compatibility matrix | [docs/client-matrix.md](docs/client-matrix.md) |
 
 Everything else is upstream's. The base is recorded in
 [`UPSTREAM_VERSION`](UPSTREAM_VERSION), and `.github/workflows/upstream-watch.yaml`

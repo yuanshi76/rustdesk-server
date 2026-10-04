@@ -1,0 +1,36 @@
+# One relay server (hbbr only), for the machines in a multi-relay setup.
+#
+# Run this on every relay machine. The ID server (hbbs) runs elsewhere, once, and
+# lists all the relays:
+#
+#     hbbs -r hk.example.com:21117,sh.example.com:21117
+#
+# and is given a routing table (see docs/relay-routing.md) saying which relay is
+# nearest which clients. hbbr itself needs to know nothing about the others, or about
+# hbbs: it pairs two connections that present the same one-time ID and passes bytes
+# between them.
+#
+# Not exercised on a real multi-machine deployment; the routing logic is tested
+# with stand-in relays on one machine.
+
+services:
+  hbbr:
+    container_name: rustdesk_hbbr
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.3.0
+    # By default hbbr accepts any client. To make it check the key, give it the same
+    # key as hbbs: the contents of hbbs's id_ed25519.pub.
+    command: hbbr
+    # command: hbbr -k <contents of id_ed25519.pub>
+    ports:
+      - "21117:21117"       # relay
+      - "21119:21119"       # relay websocket
+    volumes:
+      - ./data:/root
+    mem_limit: 128m
+    restart: unless-stopped
+
+# The address clients reach this relay on must be what you write in hbbs's -r list
+# and in the routing table, exactly. If you publish 21117 as some other host port,
+# that host port is the one to write there.
+#
+# Open 21117/tcp (and 21119/tcp for websocket clients) in the machine's firewall.

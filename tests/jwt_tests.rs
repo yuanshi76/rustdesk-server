@@ -62,3 +62,38 @@ fn rejects_garbage() {
     assert!(jwt::verify_token("not-a-jwt").is_err());
     assert!(jwt::verify_token("a.b.c").is_err());
 }
+
+/// A token issued by the real rustdesk-api (lejianwen/rustdesk-api, image of
+/// 2025-09-28) started with RUSTDESK_API_JWT_KEY=interop-test-secret, logging in as
+/// its initial admin. Kept byte for byte, so that what hbbs verifies is what that
+/// API really emits and not what this repository assumes it emits:
+///
+///     header {"alg":"HS256","typ":"JWT"}   claims {"user_id":1,"exp":<7 days on>}
+///
+/// Its exp has since passed, so expiry validation is switched off: this checks the
+/// signature scheme and that the claims fit `Claims`, which is the part that could
+/// silently drift, and does not go stale.
+const REAL_API_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE3OTE3MjAyMjB9.QcsTexdocTy2GmMRbSTL_y5RABjAhaajLhCt73ZkzSM";
+const REAL_API_SECRET: &str = "interop-test-secret";
+
+#[test]
+fn a_token_the_real_api_issued_is_readable_by_this_verifier() {
+    use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = false;
+    let data = decode::<jwt::Claims>(
+        REAL_API_TOKEN,
+        &DecodingKey::from_secret(REAL_API_SECRET.as_ref()),
+        &validation,
+    )
+    .expect("the real API's token should verify with its own secret");
+    assert_eq!(data.claims.user_id, 1);
+
+    // And the wrong secret must not.
+    assert!(decode::<jwt::Claims>(
+        REAL_API_TOKEN,
+        &DecodingKey::from_secret(b"some-other-secret"),
+        &validation,
+    )
+    .is_err());
+}

@@ -54,7 +54,9 @@ jobs:
         run: cargo clippy --all-targets
 
   soak:
-    name: Soak (${{ github.event_name == 'workflow_dispatch' && '60' || '10' }} min)
+    # A static name: a name built from an expression is shown unevaluated when the
+    # job is skipped, as it is on pull requests.
+    name: Soak
     # Only where it will not hold up a PR: manual runs and pushes to main.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-22.04
