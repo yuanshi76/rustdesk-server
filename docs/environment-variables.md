@@ -121,6 +121,34 @@ printf 'h' | nc 127.0.0.1 21117
 
 Use the corresponding configured ports if you changed `PORT`.
 
+#### Reaching the console from a container
+
+The console answers only connections that arrive from loopback **inside the
+container's network namespace**. Publishing the port does not help, and is not
+meant to: through a published port the connection arrives from the Docker
+gateway, is not loopback, and is treated as an ordinary NAT-test request. How to
+get in depends on the image (the two commands below were run against the
+published `v0.2.0` images):
+
+```bash
+# s6 images (busybox inside): run nc in the container
+docker exec rustdesk-server sh -c "printf 'ws-peers' | nc -w 2 127.0.0.1 21115"
+
+# classic image (FROM scratch, no shell, no nc: `docker exec` cannot run anything).
+# Borrow its network namespace with a throwaway container instead:
+docker run --rm --network container:rustdesk_hbbs busybox:stable \
+  sh -c "printf 'ws-peers' | nc -w 2 127.0.0.1 21115"
+```
+
+The same `--network container:` form should reach `hbbr`'s console on its relay
+port (not tried here). A container that shares another's namespace, such as the
+API in the compose examples, already has the right loopback, if its image has a
+shell and `nc`.
+
+Not every command in `h` does something: `reload-geo(rg)` is listed but has no
+handler, and `test-geo(tg)` just prints what the round-robin relay picker would
+return for the two addresses.
+
 ---
 
 ## Database

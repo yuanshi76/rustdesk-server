@@ -430,3 +430,147 @@ it is not the same evidence, and it should not be reported as if it were.
    cross's musl images ship no OpenSSL for the target, so without it the CI
    cross-builds do not compile at all. See the commit message for the two
    independent confirmations.
+
+---
+
+## Part B groundwork (2026-10-04)
+
+The plan (`rustdesk-improvement-plan-v2.md`, brief v2) came from a separate chat
+session that worked from a different snapshot of the server (upstream commit
+`bac9548`, partly truncated) and said to re-check everything against 1.1.16. All of
+it below was re-checked against *this* tree: upstream `a7736be` plus the series.
+Labels as before: VERIFIED = read or run here, INFERRED = drawn from verified
+facts.
+
+### Relay selection: the plan's claims against the code
+
+| Plan says | Here |
+|---|---|
+| Round-robin; both peers' IPs ignored | VERIFIED. `get_relay_server(&self, _pa, _pb)`; one global counter. |
+| Health check every 3 s, only with more than one relay | VERIFIED, with two details the plan lacks. The probe is a bare TCP connect (`FramedStream::new`), so every `hbbr` takes a connection every 3 s. And the live list is replaced only when the healthy subset is **non-empty**: if every relay fails the check, the previous list, dead nodes included, stays in use. |
+| `rs` sets the list at runtime | VERIFIED. `Data::RelayServers0` -> `parse_relay_servers` sets the configured and the live list at once; the next tick narrows it. |
+| Geo scaffolding: unknown | VERIFIED: **none**. `reload-geo(rg)` appears in the help text and has no handler; `test-geo(tg)` just calls `get_relay_server`. No geo or MaxMind code in `src/`. |
+| Admin interface reachable how? | VERIFIED: loopback sources only, on the NAT-test port (ID port - 1), via `handle_listener2` and `is_loopback()`. See "Operability" below for what that means per image. |
+| A second call site in the `RelayResponse` arm | VERIFIED, and narrower than the plan says. It fires only when `rr.relay_server == local_ip`, and `local_ip` is `""` unless `--mask` is set, while the arm's own guard requires `relay_server` to be non-empty. So **without `--mask` it cannot fire**, and neither can the first call site's LAN override (`peer_is_lan ^ is_lan`), which needs the mask too. |
+| No WebRTC fields in the OSS server | VERIFIED. Nothing in `src/` or the pinned `hbb_common` protos. |
+
+### What this does to the "pinning" requirement
+
+INFERRED from verified facts. `hbbr` pairs a session's two TCP connections itself,
+by uuid (the `PEERS` map in `relay_server.rs`); `hbbs` is not on the data path. So
+an established session cannot be moved by anything `hbbs` does: changing the relay
+list or the scores affects new connection attempts only, by construction.
+
+That makes the plan's acceptance test - "change the relay list and scores during a
+session; the session keeps flowing through the same node" - pass on **any** build,
+the stock one included. It cannot tell a working pin from no pin. What pinning can
+protect is consistency within **one attempt**: the first decision against the
+`RelayResponse` substitution (reachable only with `--mask`), and a client retry
+with a fresh uuid, which is a second attempt and a second selection. The brief's
+other test, that the pin test must fail on a build whose second call site still
+round-robins, is the discriminating one; the "established session" test should be
+kept as documentation, not as evidence. Worth confirming with the user that this
+is what they meant to protect before any of it is built.
+
+### Secure TCP (Phase 7)
+
+Compared with upstream PR #689 (+51/-8, open since Jul 29) and #706 (+429/-16,
+open, updated Sep 26). Neither is merged, so nothing supersedes ours and ours
+stays. Both upstream PRs generate the ephemeral key pair **per connection**;
+the fork generated it once per process, despite a comment saying otherwise.
+
+The wire format was checked against the real client, not a PR's description:
+`rustdesk/src/common.rs` (`key_exchange`, `create_symmetric_key_msg`) and
+`hbb_common` main (`set_negotiated_key`, `kx_version_for`).
+
+- VERIFIED by reading: the client takes the first frame, requires exactly one
+  signed key, verifies it against the server's long-term key, answers with
+  `[its ephemeral pk, key sealed under a zero nonce]`, which is what
+  `Encrypt::decode` inverts.
+- VERIFIED by reading: against a server that advertises no version (ours), the
+  client computes `picked = min(0, 1) = 0` and calls `set_key(key)`, i.e.
+  `Encrypt::new(key)`, the scheme this server uses. **Kx v1 needs no server change.**
+- VERIFIED by reading, and new: a set top bit on the offered X25519 key makes the
+  client demand `signed_params`, which a v0 server never sends. libsodium never
+  produces such a key; the test now asserts it so a later change cannot quietly
+  break v1 clients.
+- The pinned `hbb_common` (`69cea8d`) has none of the v1 API; `hbb_common` main
+  does. `src/tcp.rs` - the stream `Encrypt` and its nonce counters - is
+  byte-identical between the fork's old pointer (`d6b1497`) and ours, so the bump
+  carries no cipher change. The three "symmetric crypt" commits in that range only
+  touch `config.rs`, the local config encryption.
+
+Two defects found in the ported handshake and fixed, each with a test that failed
+first (commit `09cdcc7`):
+
+1. **Not ephemeral.** One key pair per process, so every connection was offered the
+   same key. Now one per connection, spent on that connection's first frame.
+2. **Receive state lived on the sink.** A `PunchHoleRequest` moves the sink into
+   `tcp_punch` while the read loop keeps going, and from then on the loop found no
+   sink, skipped decryption and parsed ciphertext as protobuf. The brief says
+   encryption state must persist on the held connection; the reply side did, the
+   receive side did not. Receive state now lives in the loop and send state with
+   the sink: one owner per direction, so nonce counters cannot desynchronise, and
+   no `Arc<Mutex<..>>` as #706 needed.
+
+**Not verified: any real client session.** What exists is a reading of the client's
+source and a test that replays its logic. The 1.4.x / 1.5.0 matrix and the
+`--deploy` check in Phase 7 need real clients, and are blocked on that.
+
+### `hbb_common`
+
+Pinned `69cea8d` (2026-07-26), 315 commits past the pointer tag 1.1.16 ships. They
+include security fixes: zstd output cap, aligned-allocation layout, `BytesCodec`
+`reserve` bound, symmetric-nonce fixes in config encryption. No WebRTC fields;
+Stage B of Phase 10 would need a deliberate bump to a revision that has them.
+
+### Operability: reaching the admin console
+
+VERIFIED against the published `v0.2.0` images (arm64):
+
+| Image | Route |
+|---|---|
+| s6 (busybox) | `docker exec <c> sh -c "printf 'ws-peers' \| nc -w 2 127.0.0.1 21115"` works. Through the published port it is correctly refused: the source is not loopback inside the container. |
+| classic (`FROM scratch`) | `docker exec` cannot run **anything**: no shell, no `nc`; the image holds three binaries. Works with a throwaway container sharing the namespace: `docker run --rm --network container:<name> busybox:stable sh -c "printf '...' \| nc -w 2 127.0.0.1 21115"`. |
+
+So on the classic image - the reference deployment - the console, and with it `rs`
+(the drain step in Phase 8), `ws-peers`, `ib` and `must-login`, is unreachable by
+the obvious route. Documented in `docs/environment-variables.md`.
+
+### The independent chat run
+
+A second session ran the same brief in another environment and left its notes.
+Where it overlaps this repo it agrees: same root cause in the same code (`ws_map`;
+the exit path cleaned `tcp_punch` but not `ws_map`), the same observation that
+only the `RegisterPk` path leaks (idle, `RegisterPeer`, `PunchHoleRequest` and
+`RequestRelay` do not), and a regression test that fails before and passes after.
+Its fix is narrower (a connection id on each `ws_map` entry) than the channel
+design used here, and it did not reach the rebase, the soak on a real process, the
+workflows or the images. It listed as open things already done here: the
+heartbeat falling through to `false`, the `ws_map` entry being consumed by the
+first push, the JWT secret printed by `generate_token`, the secure-TCP handshake
+untested.
+
+One of its observations was acted on: `MUST_LOGIN=Y` without
+`RUSTDESK_API_JWT_KEY` accepts any non-empty token. Behaviour unchanged, since
+refusing to start would break setups that run that way; hbbs now warns at startup
+and when `must-login Y` is sent to the console.
+
+### The measurement tool, and this machine
+
+`tools/relay-rtt/` (Phase 9). Reviewed, fixed and tested; see its README. Running
+it against real hosts rather than loopback found that **the machine used for this
+session has a fake-IP TUN proxy active**: `github.com` resolved to `198.18.0.50`
+and `1.1.1.1` and `8.8.8.8` "answered" in 0.3-0.4 ms, which is the proxy answering
+locally. The tool now warns on that address range. The campaign must not be run
+from a machine in that state.
+
+### What is still open
+
+| Item | State |
+|---|---|
+| Part A item 6: upstream-watch opens a PR on a simulated release | **Unproven.** Query, comparison, keepalive and the PAT have run for real; the rebase-and-open-PR path has not. Needs a throwaway tag, branch and PR in the repository, which is the owner's call. |
+| Phase 6: report the leak | Drafted (`docs/leak-report.md`), unfiled. The leak is the fork's, not upstream's. |
+| Phase 7 matrix, `--deploy` check, Phase 10 | Need real 1.4.x and 1.5.0 clients. |
+| Phase 9 campaign | Tool ready. Needs the real node list and the sites to run from. Everything in Phase 8 waits on it, per the plan's own decision rule: if the best node is within ~20% of the second best for every pair that matters, relay selection is not worth building. |
+| Phase 8 | Not started, deliberately. Read-first is done (above). |
