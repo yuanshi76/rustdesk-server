@@ -398,6 +398,8 @@ watcher depends on (below), and the whole test suite the CI jobs invoke.
 
 ### Upstream-watch rebase, simulated
 
+*Superseded on 2026-10-04: the watcher now merges rather than rebases, after an end-to-end run showed the rebase design produced an unmergeable PR. See "upstream-watch, run end to end" below. What follows is the local dry run it was first judged on, which could not have shown that.*
+
 The watcher's core mechanic was exercised locally rather than trusted: a
 synthetic upstream release was built by committing a change to
 `src/rendezvous_server.rs` on top of `a7736be` and tagging it `1.1.17-sim`, then
@@ -453,6 +455,12 @@ it is not the same evidence, and it should not be reported as if it were.
    cross's musl images ship no OpenSSL for the target, so without it the CI
    cross-builds do not compile at all. See the commit message for the two
    independent confirmations.
+6. **upstream-watch merges the release into `main` instead of rebasing the series
+   onto it.** The brief says rebase. A rebase cannot yield a mergeable pull request
+   here without force-pushing `main`, which the brief says to ask before, and the
+   PR it did produce was unmergeable and untested. A merge keeps every commit and
+   its authorship and needs no force-push. The cost is that the series is no longer
+   a tidy stack on the upstream base; it is merged history.
 
 ---
 
@@ -604,11 +612,47 @@ and `1.1.1.1` and `8.8.8.8` "answered" in 0.3-0.4 ms, which is the proxy answeri
 locally. The tool now warns on that address range. The campaign must not be run
 from a machine in that state.
 
+### upstream-watch, run end to end against a simulated release
+
+Part A item 6 asks for the watcher to open a PR on a simulated release. Done on
+2026-10-04: one commit on the real base (`a7736be`) in a file the series never
+touches, tagged `sim-1.1.17` (a name matching no build trigger, so no images were
+built), then `workflow_dispatch` with `force_release=sim-1.1.17` and the new
+`upstream_repo` input pointing at this repository. The tag, branch and pull request
+were removed afterwards.
+
+**The first run found a design flaw, and every step was green.** The workflow
+rebased the series onto the release, built, tested, soaked, pushed the branch and
+opened a PR. That PR was `mergeable=CONFLICTING`, 48 commits, 75 files, and **no
+`pull_request` CI run started**. A rebased series has new commit hashes, so its
+merge base with `main` is still the old upstream commit; `UPSTREAM_VERSION` does not
+exist there, and both sides add it with different content. That would happen on
+every real release. GitHub builds no merge ref for a conflicting PR, so its
+`pull_request` workflows never fire. The add/add cause is INFERRED from the PR
+state; the second run bears it out.
+
+**The fix is a merge, not a rebase** (a deviation from the brief, see below). Second
+run: PR `MERGEABLE`, 3 commits (the simulated release, the merge, "record the new
+base"), 2 files changed, a real `pull_request` CI run that passed. The prediction
+that CI would fire once the PR was mergeable was written down before the run and
+could have failed.
+
+One flaw was found by working out what the push contains, before running anything:
+the series has 7 commits that change files under `.github/workflows`, and GitHub
+refuses a push containing those from `GITHUB_TOKEN`, which cannot be granted the
+`workflows` permission. Only the PAT publishes the branch. That is documented
+GitHub behaviour; **the failing variant was not run**, so it is not demonstrated
+here.
+
+Not exercised: the conflict path (an issue with the merge output), the
+submodule-pointer branch (the simulated release kept the pointer), and a real
+upstream release.
+
 ### What is still open
 
 | Item | State |
 |---|---|
-| Part A item 6: upstream-watch opens a PR on a simulated release | **Unproven.** Query, comparison, keepalive and the PAT have run for real; the rebase-and-open-PR path has not. Needs a throwaway tag, branch and PR in the repository, which is the owner's call. |
+| Part A item 6: upstream-watch opens a PR on a simulated release | **Done** (see above), after a redesign. Still unexercised: the conflict path, the pointer-advance branch, and a real release. |
 | Phase 6: report the leak | Drafted (`docs/leak-report.md`), unfiled. The leak is the fork's, not upstream's. |
 | Phase 7 matrix, `--deploy` check, Phase 10 | Need real 1.4.x and 1.5.0 clients. |
 | Phase 9 campaign | Tool ready. Needs the real node list and the sites to run from. Everything in Phase 8 waits on it, per the plan's own decision rule: if the best node is within ~20% of the second best for every pair that matters, relay selection is not worth building. |
