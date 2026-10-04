@@ -14,9 +14,15 @@ name: upstream-watch
 #      access to THIS repository) and CI will run on the PR; without it the PR
 #      is still opened, just unchecked, and the job says so.
 #
-# The PAT is used in exactly one place - opening the pull request. Every git
-# operation here uses the built-in GITHUB_TOKEN, so a missing or broken PAT
-# cannot break checkout or the keepalive commit.
+# Which token does what:
+#   - Checkout and the keepalive commit use the built-in GITHUB_TOKEN, so a missing
+#     or broken PAT cannot break them. The keepalive wants it: a push made with it
+#     triggers no workflows, which is the point of a no-op activity commit.
+#   - Publishing the rebased branch and opening the pull request use the PAT. The
+#     rebased series contains commits that change files under .github/workflows,
+#     and GitHub refuses a push containing those from GITHUB_TOKEN, which cannot
+#     be granted the `workflows` permission. Only a PAT with `workflow` scope (or
+#     a fine-grained token with Workflows read/write) can publish it.
 
 on:
   schedule:
@@ -27,6 +33,10 @@ on:
         description: "Pretend this upstream release is the latest (for testing)"
         type: string
         required: false
+      upstream_repo:
+        description: "Where to look for upstream (for testing against a simulated upstream)"
+        type: string
+        required: false
 
 permissions:
   contents: write
@@ -34,7 +44,7 @@ permissions:
   issues: write
 
 env:
-  UPSTREAM_REPO: rustdesk/rustdesk-server
+  UPSTREAM_REPO: ${{ inputs.upstream_repo || 'rustdesk/rustdesk-server' }}
 
 jobs:
   check:
@@ -215,7 +225,17 @@ jobs:
 
       - name: Push the branch
         if: steps.rebase.outcome == 'success'
-        run: git push --force origin "${{ steps.rebase.outputs.branch }}"
+        env:
+          PUSH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${PUSH_TOKEN:-}" ]; then
+            echo "::error::UPSTREAM_SYNC_TOKEN is not set. The rebased branch changes files under .github/workflows, which GITHUB_TOKEN is not allowed to push."
+            exit 1
+          fi
+          git push --force \
+            "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "${{ steps.rebase.outputs.branch }}"
 
       - name: Open the PR
         if: steps.rebase.outcome == 'success'
