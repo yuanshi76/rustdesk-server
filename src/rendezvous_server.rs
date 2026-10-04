@@ -52,9 +52,11 @@ enum Data {
 const REG_TIMEOUT: i64 = 30_000;
 type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
 type WsSink = SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tungstenite::Message>;
-/// A connection's write half, plus the symmetric key negotiated for it by
-/// KeyExchange, if any. The key lives with the sink so that only the task that
-/// owns the connection can encrypt for it.
+/// A connection's write half, plus the cipher it encrypts with once KeyExchange
+/// has run. This is the send half only: a sink can be moved out of the read loop
+/// into `tcp_punch` to answer later, and must keep encrypting at the right nonce
+/// counter when it does. Decrypting what the peer sends stays in the read loop,
+/// which outlives the move.
 struct EncryptedSink<S> {
     sink: S,
     encrypt: Option<Encrypt>,
@@ -172,10 +174,6 @@ struct Inner {
     mask: Option<Ipv4Network>,
     local_ip: String,
     sk: Option<sign::SecretKey>,
-    /// Ephemeral key pair, regenerated on every start, used only to wrap the
-    /// per-connection symmetric key during KeyExchange.
-    secure_tcp_pk_b: box_::PublicKey,
-    secure_tcp_sk_b: box_::SecretKey,
 }
 
 #[derive(Clone)]
@@ -237,9 +235,6 @@ impl RendezvousServer {
                     .unwrap_or_default(),
             )
         };
-        // Fresh per process: the client learns this public key from a message
-        // signed with the server's long-term secret key.
-        let (secure_tcp_pk_b, secure_tcp_sk_b) = box_::gen_keypair();
         let mut rs = Self {
             tcp_punch: Arc::new(Mutex::new(HashMap::new())),
             pm,
@@ -254,8 +249,6 @@ impl RendezvousServer {
                 sk,
                 mask,
                 local_ip,
-                secure_tcp_pk_b,
-                secure_tcp_sk_b,
             }),
             ws_peers: Arc::new(StdMutex::new(HashMap::new())),
         };
@@ -653,28 +646,6 @@ impl RendezvousServer {
                     }
                     msg_out.set_test_nat_response(res);
                     Self::send_to_sink(sink, msg_out).await;
-                }
-                Some(rendezvous_message::Union::KeyExchange(ex)) => {
-                    // Phase 2: the peer sealed a symmetric key to the public key
-                    // we signed and sent in phase 1. Everything after this frame
-                    // is secretbox-encrypted with it.
-                    if ex.keys.len() != 2 {
-                        log::error!("Handshake failed: invalid phase 2 key exchange message");
-                        return false;
-                    }
-                    match Encrypt::decode(&ex.keys[1], &ex.keys[0], &self.inner.secure_tcp_sk_b) {
-                        Ok(key) => {
-                            if let Some(sink) = sink.as_mut() {
-                                sink.set_key(key);
-                            }
-                            log::debug!("KeyExchange with {} succeeded", addr);
-                            return true;
-                        }
-                        Err(err) => {
-                            log::error!("KeyExchange with {} failed: {}", addr, err);
-                            return false;
-                        }
-                    }
                 }
                 Some(rendezvous_message::Union::OnlineRequest(or)) => {
                     // Web and websocket clients have no second connection to
@@ -1457,21 +1428,35 @@ impl RendezvousServer {
         res
     }
 
-    /// Phase 1: hand the peer this process's ephemeral public key, signed with
-    /// the server's long-term secret key so the peer can tell it is ours.
-    /// Skipped when the server has no key configured.
-    async fn key_exchange_phase1(&mut self, addr: SocketAddr, sink: &mut Option<Sink>) {
-        let Some(sk) = self.inner.sk.as_ref() else {
-            return;
-        };
+    /// Phase 1: offer the peer a public key made for this connection alone,
+    /// signed with the server's long-term secret key so the peer can tell it is
+    /// ours. Returns the matching secret key for the caller to keep for exactly
+    /// one frame. Skipped when the server has no key to sign with.
+    ///
+    /// One key pair per connection is what makes the key ephemeral: recording a
+    /// session and later obtaining this process's memory would otherwise unlock
+    /// every session since it started, not one.
+    ///
+    /// The public key is a plain X25519 output, whose top bit is always clear. A
+    /// 1.5.0 client reads a set top bit as "this server signs its parameters" and
+    /// then requires `signed_params`, which a v0 server never sends - so nothing
+    /// here may ever set it.
+    async fn key_exchange_phase1(
+        &self,
+        addr: SocketAddr,
+        sink: &mut Option<Sink>,
+    ) -> Option<box_::SecretKey> {
+        let sk = self.inner.sk.as_ref()?;
         log::debug!("KeyExchange phase 1 with {}", addr);
-        let signed = sign::sign(&self.inner.secure_tcp_pk_b.0, sk);
+        let (pk_b, sk_b) = box_::gen_keypair();
+        let signed = sign::sign(&pk_b.0, sk);
         let mut msg_out = RendezvousMessage::new();
         msg_out.set_key_exchange(KeyExchange {
             keys: vec![Bytes::from(signed)],
             ..Default::default()
         });
         Self::send_to_sink(sink, msg_out).await;
+        Some(sk_b)
     }
 
     async fn handle_listener2(&self, stream: TcpStream, addr: SocketAddr) {
@@ -1628,15 +1613,46 @@ impl RendezvousServer {
                 encrypt: None,
             }));
             // Not on the NAT-test helper port, which answers unauthenticated.
-            if !key.is_empty() {
-                self.key_exchange_phase1(addr, &mut sink).await;
-            }
+            let mut handshake_sk = if !key.is_empty() {
+                self.key_exchange_phase1(addr, &mut sink).await
+            } else {
+                None
+            };
+            // What we decrypt with. It lives here, not on the sink: a
+            // PunchHoleRequest moves the sink into `tcp_punch` while this loop
+            // keeps reading, and the peer's next frame is still encrypted.
+            let mut recv_encrypt: Option<Encrypt> = None;
             while let Ok(Some(Ok(mut bytes))) = timeout(30_000, b.next()).await {
-                if let Some(Sink::TcpStream(s)) = sink.as_mut() {
-                    if let Some(key) = s.encrypt.as_mut() {
-                        if let Err(err) = key.dec(&mut bytes) {
-                            log::error!("Failed to decrypt from {}: {}", addr, err);
-                            break;
+                if let Some(crypt) = recv_encrypt.as_mut() {
+                    if let Err(err) = crypt.dec(&mut bytes) {
+                        log::error!("Failed to decrypt from {}: {}", addr, err);
+                        break;
+                    }
+                }
+                // Phase 2 can only be a connection's first frame, and the secret
+                // is spent on it whatever it turns out to be: a client that does
+                // not secure the channel simply carries on in the clear.
+                if let Some(sk_b) = handshake_sk.take() {
+                    if let Ok(msg) = RendezvousMessage::parse_from_bytes(&bytes) {
+                        if let Some(rendezvous_message::Union::KeyExchange(ex)) = msg.union {
+                            if ex.keys.len() != 2 {
+                                log::error!("Handshake failed: invalid phase 2 from {}", addr);
+                                break;
+                            }
+                            match Encrypt::decode(&ex.keys[1], &ex.keys[0], &sk_b) {
+                                Ok(sym) => {
+                                    recv_encrypt = Some(Encrypt::new(sym.clone()));
+                                    if let Some(sink) = sink.as_mut() {
+                                        sink.set_key(sym);
+                                    }
+                                    log::debug!("KeyExchange with {} succeeded", addr);
+                                    continue;
+                                }
+                                Err(err) => {
+                                    log::error!("KeyExchange with {} failed: {}", addr, err);
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
