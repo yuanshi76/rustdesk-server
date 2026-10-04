@@ -60,3 +60,5 @@ debuild -uc -us
 # several WARNINGS and ERRORS from Lintian
 #
 # l l
+
+Simulated upstream release, used only to exercise the upstream-watch workflow. Not a real upstream commit.
