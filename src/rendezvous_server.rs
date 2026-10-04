@@ -1,6 +1,7 @@
 use crate::common::*;
 use crate::jwt;
 use crate::peer::*;
+use crate::relay_routes::RouteTable;
 use hbb_common::{
     allow_err, bail,
     bytes::{Bytes, BytesMut},
@@ -36,10 +37,11 @@ use ipnetwork::Ipv4Network;
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     sync::Arc,
     sync::Mutex as StdMutex,
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 #[derive(Clone, Debug)]
@@ -106,6 +108,42 @@ impl Sink {
 type Sender = mpsc::UnboundedSender<Data>;
 type Receiver = mpsc::UnboundedReceiver<Data>;
 static ROTATION_RELAY_SERVER: AtomicUsize = AtomicUsize::new(0);
+
+/// How long one connection attempt's choice of relay is held. A choice is made
+/// per attempt, not per call: the same attempt can ask for a relay more than once
+/// (a retry, or the LAN branch that only exists with `--mask`), and two peers that
+/// are handed different relays never meet. Override with RELAY_PIN_TTL (seconds,
+/// 0 turns pinning off).
+const RELAY_PIN_TTL_DEFAULT_SEC: u64 = 30;
+static RELAY_PIN_TTL_MS: AtomicU64 = AtomicU64::new(RELAY_PIN_TTL_DEFAULT_SEC * 1000);
+/// Bound on held choices; expired ones are dropped first.
+const MAX_RELAY_PINS: usize = 4096;
+
+/// The two ends of a session, in a fixed order, so either can be the controller.
+type PinKey = (IpAddr, IpAddr);
+
+struct RelayPin {
+    relay: String,
+    until: Instant,
+}
+
+/// The routing table and what is known about the file it came from.
+#[derive(Default)]
+struct RouteState {
+    path: Option<PathBuf>,
+    table: Option<RouteTable>,
+    /// What the file looked like when last read. `None` outside: never looked.
+    seen: Option<Option<(SystemTime, u64)>>,
+    error: Option<String>,
+}
+
+/// A decision, with enough to explain it.
+struct RelayPick {
+    relay: String,
+    reason: &'static str,
+    /// Each healthy relay's total cost, when the routing table decided.
+    costs: Vec<(String, f64)>,
+}
 type RelayServers = Vec<String>;
 const CHECK_RELAY_TIMEOUT: u64 = 3_000;
 static ALWAYS_USE_RELAY: AtomicBool = AtomicBool::new(false);
@@ -181,13 +219,19 @@ pub struct RendezvousServer {
     tcp_punch: Arc<Mutex<HashMap<SocketAddr, Sink>>>,
     pm: PeerMap,
     tx: Sender,
-    relay_servers: Arc<RelayServers>,
+    /// The healthy relays. Shared and replaced as a whole, not copied per
+    /// connection: a connection handler runs on a clone of this struct taken when
+    /// the connection opened, and a long-lived websocket would otherwise keep the
+    /// list it was born with and never learn that a relay stopped answering.
+    relay_servers: Arc<StdMutex<Arc<RelayServers>>>,
     relay_servers0: Arc<RelayServers>,
     rendezvous_servers: Arc<Vec<String>>,
     inner: Arc<Inner>,
     /// Websocket peers, so that a message can be pushed to a peer that has no
     /// UDP registration and is only reachable over its websocket.
     ws_peers: WsPeers,
+    relay_routes: Arc<StdMutex<RouteState>>,
+    relay_pins: Arc<StdMutex<HashMap<PinKey, RelayPin>>>,
 }
 
 enum LoopFailure {
@@ -251,11 +295,26 @@ impl RendezvousServer {
                 local_ip,
             }),
             ws_peers: Arc::new(StdMutex::new(HashMap::new())),
+            relay_routes: Default::default(),
+            relay_pins: Default::default(),
         };
         log::info!("mask: {:?}", rs.inner.mask);
         log::info!("local-ip: {:?}", rs.inner.local_ip);
         std::env::set_var("PORT_FOR_API", port.to_string());
         rs.parse_relay_servers(&get_arg("relay-servers"));
+        let pin_ttl = get_arg("relay-pin-ttl")
+            .parse::<u64>()
+            .unwrap_or(RELAY_PIN_TTL_DEFAULT_SEC);
+        RELAY_PIN_TTL_MS.store(pin_ttl * 1000, Ordering::SeqCst);
+        log::info!("RELAY_PIN_TTL={}s", pin_ttl);
+        let routes_path = get_arg("relay-routes");
+        if !routes_path.is_empty() {
+            log::info!("RELAY_ROUTES={}", routes_path);
+            if let Ok(mut st) = rs.relay_routes.lock() {
+                st.path = Some(PathBuf::from(&routes_path));
+            }
+            rs.reload_relay_routes();
+        }
         let mut listener = create_tcp_listener(bind_addr, port).await?;
         let mut listener2 = create_tcp_listener(bind_addr, nat_port).await?;
         let mut listener3 = create_tcp_listener(bind_addr, ws_port).await?;
@@ -391,6 +450,7 @@ impl RendezvousServer {
         loop {
             tokio::select! {
                 _ = timer_check_relay.tick() => {
+                    self.reload_relay_routes();
                     if self.relay_servers0.len() > 1 {
                         let rs = self.relay_servers0.clone();
                         let tx = self.tx.clone();
@@ -403,7 +463,7 @@ impl RendezvousServer {
                     match data {
                         Data::Msg(msg, addr) => { allow_err!(socket.send(msg.as_ref(), addr).await); }
                         Data::RelayServers0(rs) => { self.parse_relay_servers(&rs); }
-                        Data::RelayServers(rs) => { self.relay_servers = Arc::new(rs); }
+                        Data::RelayServers(rs) => { self.set_live_relays(Arc::new(rs)); }
                     }
                 }
                 res = socket.next() => {
@@ -1231,17 +1291,197 @@ impl RendezvousServer {
     fn parse_relay_servers(&mut self, relay_servers: &str) {
         let rs = get_servers(relay_servers, "relay-servers");
         self.relay_servers0 = Arc::new(rs);
-        self.relay_servers = self.relay_servers0.clone();
+        self.set_live_relays(self.relay_servers0.clone());
     }
 
-    fn get_relay_server(&self, _pa: IpAddr, _pb: IpAddr) -> String {
-        if self.relay_servers.is_empty() {
-            return "".to_owned();
-        } else if self.relay_servers.len() == 1 {
-            return self.relay_servers[0].clone();
+    fn live_relays(&self) -> Arc<RelayServers> {
+        self.relay_servers
+            .lock()
+            .map(|live| live.clone())
+            .unwrap_or_default()
+    }
+
+    fn set_live_relays(&self, relays: Arc<RelayServers>) {
+        if let Ok(mut live) = self.relay_servers.lock() {
+            *live = relays;
         }
-        let i = ROTATION_RELAY_SERVER.fetch_add(1, Ordering::SeqCst) % self.relay_servers.len();
-        self.relay_servers[i].clone()
+    }
+
+    /// The relay for a session between these two addresses, decided once per
+    /// connection attempt: see `pick_relay`.
+    fn get_relay_server(&self, pa: IpAddr, pb: IpAddr) -> String {
+        self.pick_relay(pa, pb, true).relay
+    }
+
+    /// Choose a relay for a session between `pa` and `pb`.
+    ///
+    /// With `commit`, the choice is held for RELAY_PIN_TTL so that every question
+    /// about the same attempt gets the same answer, and is logged. Without it,
+    /// nothing is held, rotated or logged: that is the dry run.
+    ///
+    /// Policy: the routing table if one is loaded and knows either end, otherwise
+    /// round-robin over the healthy relays. A broken or missing table therefore
+    /// degrades to what a server without one does, and never blocks a connection.
+    fn pick_relay(&self, pa: IpAddr, pb: IpAddr, commit: bool) -> RelayPick {
+        let live = self.live_relays();
+        match live.len() {
+            0 => {
+                return RelayPick {
+                    relay: "".to_owned(),
+                    reason: "no relay configured",
+                    costs: Vec::new(),
+                }
+            }
+            1 => {
+                return RelayPick {
+                    relay: live[0].clone(),
+                    reason: "only relay",
+                    costs: Vec::new(),
+                }
+            }
+            _ => {}
+        }
+        let (a, b) = (pa.to_canonical(), pb.to_canonical());
+        let key = if a <= b { (a, b) } else { (b, a) };
+
+        if commit {
+            if let Some(relay) = self.pinned_relay(&key, &live) {
+                return RelayPick {
+                    relay,
+                    reason: "pinned",
+                    costs: Vec::new(),
+                };
+            }
+        }
+
+        let routed = self.relay_routes.lock().ok().and_then(|st| {
+            st.table
+                .as_ref()
+                .and_then(|t| t.choose(live.as_slice(), pa, pb))
+        });
+        let pick = match routed {
+            Some(c) => RelayPick {
+                relay: c.relay,
+                reason: "routes",
+                costs: c.costs,
+            },
+            None => {
+                let n = if commit {
+                    ROTATION_RELAY_SERVER.fetch_add(1, Ordering::SeqCst)
+                } else {
+                    ROTATION_RELAY_SERVER.load(Ordering::SeqCst)
+                };
+                RelayPick {
+                    relay: live[n % live.len()].clone(),
+                    reason: "round-robin",
+                    costs: Vec::new(),
+                }
+            }
+        };
+        if commit {
+            self.pin_relay(key, &pick.relay);
+            log::info!(
+                "relay for {} <-> {}: {} ({}{})",
+                pa,
+                pb,
+                pick.relay,
+                pick.reason,
+                pick.costs
+                    .iter()
+                    .map(|(r, c)| format!(" {r}={c}"))
+                    .collect::<String>()
+            );
+        }
+        pick
+    }
+
+    /// A held choice that has not expired and names a relay that is still healthy.
+    /// A pin must never keep handing out a relay that has stopped answering.
+    fn pinned_relay(&self, key: &PinKey, live: &[String]) -> Option<String> {
+        let mut pins = self.relay_pins.lock().ok()?;
+        match pins.get(key) {
+            Some(p) if p.until > Instant::now() && live.contains(&p.relay) => Some(p.relay.clone()),
+            Some(_) => {
+                pins.remove(key);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn pin_relay(&self, key: PinKey, relay: &str) {
+        let ttl = RELAY_PIN_TTL_MS.load(Ordering::SeqCst);
+        if ttl == 0 {
+            return;
+        }
+        let Ok(mut pins) = self.relay_pins.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        if pins.len() >= MAX_RELAY_PINS {
+            pins.retain(|_, p| p.until > now);
+            if pins.len() >= MAX_RELAY_PINS {
+                pins.clear();
+            }
+        }
+        pins.insert(
+            key,
+            RelayPin {
+                relay: relay.to_owned(),
+                until: now + Duration::from_millis(ttl),
+            },
+        );
+    }
+
+    /// Re-read the routing file if it changed. Called every few seconds. A file
+    /// that cannot be read or parsed is reported once per change and the previous
+    /// table, or round-robin if there was none, stays in force.
+    fn reload_relay_routes(&self) {
+        let Ok(mut st) = self.relay_routes.lock() else {
+            return;
+        };
+        let Some(path) = st.path.clone() else {
+            return;
+        };
+        let stamp = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| Some((m.modified().ok()?, m.len())));
+        if st.seen == Some(stamp) {
+            return;
+        }
+        st.seen = Some(stamp);
+        let loaded = match stamp {
+            Some(_) => RouteTable::load(&path),
+            None => Err(format!("cannot read {}", path.display())),
+        };
+        match loaded {
+            Ok(table) => {
+                log::info!(
+                    "relay routes: loaded {} route(s) from {}",
+                    table.rule_count(),
+                    path.display()
+                );
+                st.table = Some(table);
+                st.error = None;
+                // Decisions made under the old table are not worth keeping.
+                if let Ok(mut pins) = self.relay_pins.lock() {
+                    pins.clear();
+                }
+            }
+            Err(err) => {
+                log::error!(
+                    "relay routes: {}: {}; keeping {}",
+                    path.display(),
+                    err,
+                    if st.table.is_some() {
+                        "the previous table"
+                    } else {
+                        "round-robin"
+                    }
+                );
+                st.error = Some(err);
+            }
+        }
     }
 
     async fn check_cmd(&self, cmd: &str) -> String {
@@ -1252,7 +1492,7 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
@@ -1261,14 +1501,16 @@ impl RendezvousServer {
                     "always-use-relay(aur) [Y|N]",
                     "test-geo(tg) <ip1> <ip2>",
                     "must-login(ml) [Y|N]",
-                    "ws-peers(wp)"
+                    "ws-peers(wp)",
+                    "test-relay(tr) <ip1> [<ip2>]",
+                    "relay-routes(rr)"
                 )
             }
             Some("relay-servers" | "rs") => {
                 if let Some(rs) = fds.next() {
                     self.tx.send(Data::RelayServers0(rs.to_owned())).ok();
                 } else {
-                    for ip in self.relay_servers.iter() {
+                    for ip in self.live_relays().iter() {
                         let _ = writeln!(res, "{ip}");
                     }
                 }
@@ -1403,6 +1645,48 @@ impl RendezvousServer {
                     );
                 }
             }
+            Some("test-relay" | "tr") => {
+                // The dry run: what would be chosen for a session between these
+                // two addresses, and why. Holds, rotates and logs nothing.
+                if let Some(first) = fds.next() {
+                    let second = fds.next().unwrap_or(first);
+                    if let (Ok(a), Ok(b)) = (first.parse::<IpAddr>(), second.parse::<IpAddr>()) {
+                        let pick = self.pick_relay(a, b, false);
+                        let _ = writeln!(res, "relay: {} ({})", pick.relay, pick.reason);
+                        for (relay, cost) in &pick.costs {
+                            let _ = writeln!(res, "{relay}={cost}");
+                        }
+                    } else {
+                        let _ = writeln!(res, "usage: test-relay <ip1> [<ip2>]");
+                    }
+                }
+            }
+            Some("relay-routes" | "rr") => {
+                if let Ok(st) = self.relay_routes.lock() {
+                    match &st.path {
+                        None => {
+                            let _ = writeln!(res, "no routing table configured (RELAY_ROUTES)");
+                        }
+                        Some(path) => {
+                            let _ = writeln!(res, "file: {}", path.display());
+                            let _ = writeln!(
+                                res,
+                                "routes: {}",
+                                st.table.as_ref().map_or(0, |t| t.rule_count())
+                            );
+                            if let Some(err) = &st.error {
+                                let _ = writeln!(res, "last error: {err}");
+                            }
+                        }
+                    }
+                }
+                let _ = writeln!(
+                    res,
+                    "pin ttl: {}s, held: {}",
+                    RELAY_PIN_TTL_MS.load(Ordering::SeqCst) / 1000,
+                    self.relay_pins.lock().map_or(0, |p| p.len())
+                );
+            }
             Some("ws-peers" | "wp") => {
                 let _ = writeln!(res, "ws peers: {}", self.ws_peer_count());
             }
@@ -1422,10 +1706,10 @@ impl RendezvousServer {
                     if let Ok(a) = rs.parse::<IpAddr>() {
                         if let Some(rs) = fds.next() {
                             if let Ok(b) = rs.parse::<IpAddr>() {
-                                res = format!("{:?}", self.get_relay_server(a, b));
+                                res = format!("{:?}", self.pick_relay(a, b, false).relay);
                             }
                         } else {
-                            res = format!("{:?}", self.get_relay_server(a, a));
+                            res = format!("{:?}", self.pick_relay(a, a, false).relay);
                         }
                     }
                 }
@@ -1766,7 +2050,7 @@ fn warn_if_login_unverifiable() {
 async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
     let mut futs = Vec::new();
     let rs = Arc::new(Mutex::new(Vec::new()));
-    for x in rs0.iter() {
+    for (i, x) in rs0.iter().enumerate() {
         let mut host = x.to_owned();
         if !host.contains(':') {
             host = format!("{}:{}", host, config::RELAY_PORT);
@@ -1778,13 +2062,18 @@ async fn check_relay_servers(rs0: Arc<RelayServers>, tx: Sender) {
                 .await
                 .is_ok()
             {
-                rs.lock().await.push(x);
+                rs.lock().await.push((i, x));
             }
         }));
     }
     join_all(futs).await;
     log::debug!("check_relay_servers");
-    let rs = std::mem::take(&mut *rs.lock().await);
+    let mut rs = std::mem::take(&mut *rs.lock().await);
+    // The probes run concurrently and finish in whatever order the network allows.
+    // Configured order is the tie-break between equally good relays and the only
+    // way an operator says "prefer this one", so put it back.
+    rs.sort_by_key(|(i, _)| *i);
+    let rs: Vec<String> = rs.into_iter().map(|(_, x)| x).collect();
     if !rs.is_empty() {
         tx.send(Data::RelayServers(rs)).ok();
     }

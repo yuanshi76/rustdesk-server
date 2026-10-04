@@ -25,7 +25,9 @@ fn main() -> ResultType<()> {
         , --mask=[MASK] '[DEPRECATED] Determine if the connection comes from LAN, e.g. 192.168.0.0/16'
         -k, --key=[KEY] 'Only allow the client with the same key'
         , --must-login=[Y|N] 'Only allow a client that presents a login token (env: MUST_LOGIN)'
-        , --ws-idle-timeout=[SECONDS(default=90)] 'Close a websocket that has sent nothing for this long (env: WS_IDLE_TIMEOUT)'",
+        , --ws-idle-timeout=[SECONDS(default=90)] 'Close a websocket that has sent nothing for this long (env: WS_IDLE_TIMEOUT)'
+        , --relay-routes=[FILE] 'Routing table choosing the relay nearest to each client network (env: RELAY_ROUTES)'
+        , --relay-pin-ttl=[SECONDS(default=30)] 'Hold one connection attempt's relay this long, 0 to disable (env: RELAY_PIN_TTL)'",
     );
     init_args(&args, "hbbs", "RustDesk ID/Rendezvous Server");
     let port = get_arg_or("port", RENDEZVOUS_PORT.to_string()).parse::<i32>()?;
