@@ -64,7 +64,7 @@ fn startup_log(port: i32, name: &str, jwt_key: Option<&str>) -> String {
 
 #[test]
 fn warns_when_tokens_cannot_be_verified() {
-    let log = startup_log(43116, "login-warn", None);
+    let log = startup_log(20196, "login-warn", None);
     assert!(
         log.contains("any non-empty token is accepted"),
         "no warning that MUST_LOGIN without a key accepts any token:\n{log}"
@@ -73,7 +73,7 @@ fn warns_when_tokens_cannot_be_verified() {
 
 #[test]
 fn says_nothing_when_a_key_is_set() {
-    let log = startup_log(44116, "login-key", Some("a-shared-secret"));
+    let log = startup_log(20206, "login-key", Some("a-shared-secret"));
     assert!(
         !log.contains("any non-empty token is accepted"),
         "warned although RUSTDESK_API_JWT_KEY is set:\n{log}"

@@ -42,7 +42,7 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 use support::*;
 
-const PORT: i32 = 37116;
+const PORT: i32 = 20146;
 const WS_PORT: i32 = PORT + 2;
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {

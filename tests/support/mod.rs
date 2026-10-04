@@ -12,6 +12,15 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
 };
 
+// PORTS. Every test that starts an hbbs uses a fixed port base in 20116..20266.
+// That range is chosen deliberately: it is below the OS's ephemeral port range on
+// both Linux (32768-60999) and macOS/Windows (49152-65535). The ephemeral range is
+// where outgoing connections and `bind("127.0.0.1:0")` get their ports from, so a
+// fixed port inside it can be taken by one of them first. This bit on Linux CI, as
+// "Address already in use", once tests started opening many sockets in one process;
+// it never showed on macOS, where the fixed ports happened to be outside the range.
+// Keep new ports below 32768, and away from RustDesk's own 21115-21119.
+
 pub type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Start hbbs on its own thread. start() is #[tokio::main], so it builds and

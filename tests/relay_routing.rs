@@ -173,7 +173,7 @@ fn write_routes(path: &std::path::Path, text: &str) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn one_connection_attempt_gets_one_relay_and_the_pin_expires() {
-    const PORT: i32 = 45116;
+    const PORT: i32 = 20216;
     let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
     // No routing table: plain round-robin, which on its own hands consecutive
     // attempts different relays.
@@ -209,7 +209,7 @@ async fn one_connection_attempt_gets_one_relay_and_the_pin_expires() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_routing_table_picks_the_nearest_relay_and_edits_take_effect() {
-    const PORT: i32 = 46116;
+    const PORT: i32 = 20226;
     let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
     let dir = std::env::temp_dir().join(format!("routes-edit-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -263,7 +263,7 @@ async fn the_routing_table_picks_the_nearest_relay_and_edits_take_effect() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_relay_that_stops_answering_is_not_chosen_whatever_the_table_says() {
-    const PORT: i32 = 47116;
+    const PORT: i32 = 20236;
     // Three relays, not two: with a single relay left the picker returns it
     // without looking at any pin, so a test with two cannot tell whether a pin
     // checks health. With r1 gone, r2 and r3 remain and the pin must give way.
@@ -304,7 +304,7 @@ async fn a_relay_that_stops_answering_is_not_chosen_whatever_the_table_says() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_broken_table_never_stops_connections_and_a_fixed_one_is_picked_up() {
-    const PORT: i32 = 48116;
+    const PORT: i32 = 20246;
     let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
     let dir = std::env::temp_dir().join(format!("routes-broken-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -344,7 +344,7 @@ async fn a_broken_table_never_stops_connections_and_a_fixed_one_is_picked_up() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn test_relay_explains_a_decision_without_making_one() {
-    const PORT: i32 = 49116;
+    const PORT: i32 = 20256;
     let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
     let dir = std::env::temp_dir().join(format!("routes-dry-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
@@ -388,7 +388,7 @@ async fn test_relay_explains_a_decision_without_making_one() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn healthy_relays_stay_in_the_order_they_were_configured() {
-    const PORT: i32 = 50116;
+    const PORT: i32 = 20266;
     // Order is the tie-break, and the only way to say "prefer this one", so it
     // must survive the health check, which probes every relay concurrently and
     // would otherwise return them in whatever order the network finishes.

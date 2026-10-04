@@ -10,7 +10,7 @@ use hbb_common::{rendezvous_proto::*, tokio};
 use std::time::Duration;
 use support::*;
 
-const PORT: i32 = 34116;
+const PORT: i32 = 20116;
 const WS_PORT: i32 = PORT + 2;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

@@ -21,7 +21,7 @@ use std::process::{Child, Command};
 use std::time::Duration;
 use support::wait_for_port;
 
-const PORT: i32 = 40116;
+const PORT: i32 = 20166;
 
 struct Proc(Child);
 
@@ -301,7 +301,7 @@ async fn secure_connect(port: i32, server_pk: &sign::PublicKey) -> (Conn, Encryp
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn phase1_key_is_ephemeral_per_connection_and_safe_for_v0_clients() {
-    const PORT: i32 = 41116;
+    const PORT: i32 = 20176;
     let hbbs = start_hbbs(PORT, "kex-ephemeral");
     wait_for_port(PORT).await;
 
@@ -338,7 +338,7 @@ async fn phase1_key_is_ephemeral_per_connection_and_safe_for_v0_clients() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn encryption_survives_the_sink_being_held() {
-    const PORT: i32 = 42116;
+    const PORT: i32 = 20186;
     let hbbs = start_hbbs(PORT, "kex-held");
     wait_for_port(PORT).await;
     wait_for_port(PORT + 2).await;

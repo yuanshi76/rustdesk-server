@@ -6,7 +6,7 @@ mod support;
 use hbb_common::{rendezvous_proto::*, tokio};
 use support::*;
 
-const PORT: i32 = 36116;
+const PORT: i32 = 20136;
 const WS_PORT: i32 = PORT + 2;
 
 async fn punch_hole_with(token: &str) -> PunchHoleResponse {

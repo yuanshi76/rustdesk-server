@@ -16,7 +16,7 @@ use std::process::{Child, Command};
 use std::time::Duration;
 use support::*;
 
-const PORT: i32 = 38116;
+const PORT: i32 = 20156;
 const WS_PORT: i32 = PORT + 2;
 const NAT_PORT: i32 = PORT - 1;
 const RELAY_PORT: i32 = PORT + 1;
