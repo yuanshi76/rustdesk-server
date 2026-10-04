@@ -644,9 +644,14 @@ refuses a push containing those from `GITHUB_TOKEN`, which cannot be granted the
 GitHub behaviour; **the failing variant was not run**, so it is not demonstrated
 here.
 
-Not exercised: the conflict path (an issue with the merge output), the
-submodule-pointer branch (the simulated release kept the pointer), and a real
-upstream release.
+Exercised afterwards, with a simulated release whose commit changes a line the series
+also changes: the **conflict path**. No branch and no PR; one issue, with the merge
+output and the commands to reproduce it. The "Merge" step reads `success` there only
+because it is `continue-on-error`; the proof it failed is that the conflict-issue
+step, which is gated on the step's `outcome`, ran. The issue and tag were removed.
+
+Still not exercised: the submodule-pointer branch (the simulated releases kept the
+pointer) and a real upstream release.
 
 ### Relay routing, built (2026-10-04)
 
@@ -702,11 +707,35 @@ Not done, deliberately: live measurement and a scorer process, a geographic
 database, exploration traffic. The table is the 80% case for a few known places; the
 rest waits on whether the measurements show it is needed.
 
+### The API server, read and run (2026-10-04)
+
+Asked how user management fits the distributed architecture, I read `lejianwen/
+rustdesk-api` rather than answer from its README, and ran it against this server.
+Full account in `docs/api-server.md`. What matters:
+
+- Users, groups, address books, devices and audit logs live only in the API. `hbbs`
+  and `hbbr` never call it and share no database with it.
+- **The login token has a trap.** With a JWT key the API issues HS256 tokens
+  `{user_id, exp}`; without one it issues a 32-character md5 string. An `hbbs` holding
+  the key refuses every such token, so setting the key on only one side locks out
+  every logged-in client. Run for real: a token from the keyed API passes `MUST_LOGIN`;
+  the key-less API's token, a tampered token and no token are each refused with their
+  own message. The real token's bytes are kept in `tests/jwt_tests.rs`, checked with
+  expiry validation off so it never goes stale.
+- "Server control" in the API dials loopback only, so it cannot reach a relay on
+  another machine and works only in a shared network namespace.
+- A first attempt at the real-token check came back `LICENSE_MISMATCH` for all four
+  cases: my harness, not the tokens. The licence-key check runs before the login
+  check, and that `hbbs` had generated a key. Worth recording because the result
+  looked like an answer.
+- INFERRED, not run: `hbbs` checks signature and expiry only, so logging a user out
+  in the API does not stop a token already issued until it expires.
+
 ### What is still open
 
 | Item | State |
 |---|---|
-| Part A item 6: upstream-watch opens a PR on a simulated release | **Done** (see above), after a redesign. Still unexercised: the conflict path, the pointer-advance branch, and a real release. |
+| Part A item 6: upstream-watch opens a PR on a simulated release | **Done** (see above), after a redesign, and the conflict path too. Still unexercised: the pointer-advance branch, and a real release. |
 | Phase 6: report the leak | Drafted (`docs/leak-report.md`), unfiled. The leak is the fork's, not upstream's. |
 | Phase 7 matrix, `--deploy` check, Phase 10 | Need real 1.4.x and 1.5.0 clients. |
 | Phase 9 campaign | Tool ready. Needs the real node list and the sites to run from. Everything in Phase 8 waits on it, per the plan's own decision rule: if the best node is within ~20% of the second best for every pair that matters, relay selection is not worth building. |
