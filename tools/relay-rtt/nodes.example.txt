@@ -1,0 +1,4 @@
+# id      host                  port   region      (port = the TCP port of hbbr as reachable from clients)
+relay-hk  hk.relay.example.com  31107  hk
+relay-sh  sh.relay.example.com  31107  cn-east
+relay-fra fra.relay.example.com 31107  eu
