@@ -7,6 +7,6 @@
 # head of upstream master at the time of the rebase, which carries the UDP
 # reflection/amplification fix (109d9a2) and hbb_common 69cea8d. See NOTES.md,
 # "Base selection".
-UPSTREAM_RELEASE=1.1.16
-UPSTREAM_COMMIT=a7736be5e40f85bfc141120dce587e836e5d4b80
+UPSTREAM_RELEASE=sim-1.1.17
+UPSTREAM_COMMIT=8bae3d4fb3eeb4921fa4cf0b0aa94013fad461da
 UPSTREAM_HBB_COMMON=69cea8dafee147848ae88702029f4bf7df7224c3
