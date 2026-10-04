@@ -12,3 +12,7 @@ test.*
 .idea
 docker/bin/
 docker-classic/bin/
+
+# relay-rtt: measurement output and the real node list name your servers
+tools/relay-rtt/results/
+tools/relay-rtt/nodes.txt

@@ -39,6 +39,9 @@ jobs:
       - name: Test
         run: cargo test --locked -- --nocapture
 
+      - name: Relay-RTT tool tests
+        run: python3 -m unittest discover -s tools/relay-rtt -v
+
       # Advisory: upstream's own code does not pass either of these cleanly, so
       # they report rather than gate. What matters is that our own additions do
       # not make them worse.
