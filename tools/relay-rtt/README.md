@@ -1,94 +1,65 @@
-# relay-rtt — measure which relay node is closer, before building anything
+# relay-rtt
 
-Phase 9 of the plan. Python 3.8+, standard library only; Windows, Linux, macOS.
+Measures TCP connect time (about one round trip) from the machine it runs on to each
+of your relay servers, aggregates runs from several places, and writes the routing
+table `hbbs` reads. Python 3.8+, standard library only; Windows, Linux, macOS.
 
-It answers one question: **do your relay nodes differ enough in latency, from the
-places you actually connect from, to justify latency-aware relay selection?** If
-the best node is within about 20% of the second best for every pair of sites that
-matters, the answer is no, and the relay-selection work is not worth its
-complexity. Run this first.
+**To use it, follow [`docs/measuring-latency.md`](../../docs/measuring-latency.md).**
+That is the step-by-step guide. This page is the reference.
 
-It measures TCP connect time to each relay's TCP port, which is about one round
-trip. It does not measure throughput.
+## Commands
 
-## Run it
+| | |
+|---|---|
+| `probe --nodes nodes.txt --site NAME` | one run, about 10 seconds, saved to `results/` |
+| `probe ... --repeat-every MINUTES [--repeat-for HOURS]` | keep going (default 72 h); each run is its own file; Ctrl-C is safe. No cron or Task Scheduler needed |
+| `report results/*.csv [--pair A B] [--periods]` | the matrix, flags, and a ranking for a pair of places; `--periods` splits evening from the rest of the day |
+| `routes results/*.csv --sites sites.txt --out relay_routes.txt` | writes the table for `hbbs` |
 
-1. `cp nodes.example.txt nodes.txt` and list your relays: `id host port [region]`.
-   The port is the one **clients** reach, e.g. the host-side mapping of hbbr's
-   21117, not the port inside the container.
-2. On every site you care about — home, school, a laptop — with **any proxy, TUN
-   or VPN turned off**:
+Wildcards like `results/*.csv` are expanded by the tool, because Windows' `cmd` and
+PowerShell do not.
 
-       python3 relay_rtt.py probe --nodes nodes.txt --site home
+## Why the numbers can be wrong
 
-   20 probes per node, written to `results/<site>-<utc>.csv`.
-3. Repeat at least six times a day for three or more days, **including the
-   evening** (see below). Collect every CSV in one folder, then:
-
-       python3 relay_rtt.py report results/*.csv --pair home school --periods
-
-## From measurements to a routing table
-
-Once you have the CSVs, one more command writes the file `hbbs` reads, from a small
-`sites.txt` you fill in (copy `sites.example.txt`: it maps each place to the public
-network it connects from, and says how to find it):
-
-    python3 relay_rtt.py routes results/*.csv --sites sites.txt --out relay_routes.txt
-
-It ranks each relay by the worse of its evening and daytime figure, adds a penalty
-for packet loss, and never writes a number measured through a proxy. The whole
-procedure, and how to give the file to `hbbs`, is in `docs/relay-routing.md`.
+- **A proxy or TUN answering for the server.** Tools in "fake-IP" mode hand out
+  addresses from `198.18.0.0/15` and terminate the connection on your own machine, so
+  every server looks about half a millisecond away. The probe warns on that range and
+  the report flags the cell; `routes` never writes such a measurement. A full-tunnel
+  VPN is different: it gives plausible numbers that describe the VPN, and nothing in
+  the tool can see it. Turn them off.
+- **Connect time is not throughput.** A server can answer quickly and have a thin pipe.
+- **A relayed session crosses two legs.** `--pair A B` ranks servers by the sum of the
+  two places' medians plus 10 ms per 1% loss. That is a model, not the real session.
+  Treat a margin under 20% as a tie.
+- **DNS is resolved once per run** and excluded from the timing.
 
 ## Why `--periods`
 
-The hypothesis behind this whole exercise is that long-haul paths congest in the
-evening and the ranking changes. A single median per node cannot show that: if
-evening is a few hours of a day, most runs are off-peak and the median is the
-off-peak value. `--periods` places every run in **its own site's local time** and
-ranks peak (default 19–23, change with `--peak-hours`) and off-peak separately,
-then states plainly whether the best node differs. It also flags any cell with
-fewer than `--min-runs` (default 3) runs, because a campaign that never sampled
-the evening has not tested the hypothesis.
+If evening is a few hours of a day, most runs are off-peak, and a single median per
+server is the off-peak value: an evening-only collapse is invisible. `--periods`
+places every run in its own place's local time (using the UTC offset each CSV
+records), ranks peak (default 19-23, `--peak-hours`) and the rest separately, and says
+plainly whether the best server differs. It flags any cell with fewer than
+`--min-runs` (default 3) runs, since a campaign that skipped the evening has not
+tested the idea. CSVs written before the offset was recorded cannot be placed; they are
+left out and counted.
 
-CSVs written before this field existed carry no UTC offset; `--periods` leaves
-them out and says how many.
+## `routes`: how a value is chosen
 
-## Scheduling
-
-Every three hours, plus extra evening samples, so each site gets several
-peak-hour runs a day. Cron (Linux, macOS):
-
-    0 */3 * * *      cd ~/relay-rtt && python3 relay_rtt.py probe --nodes nodes.txt --site home
-    15,45 19-22 * * * cd ~/relay-rtt && python3 relay_rtt.py probe --nodes nodes.txt --site home
-
-Windows (**not tested here**; check it with `schtasks /Query /TN relay-rtt`):
-
-    schtasks /Create /SC HOURLY /MO 3 /TN relay-rtt /TR "python C:\relay-rtt\relay_rtt.py probe --nodes C:\relay-rtt\nodes.txt --site school"
-
-A laptop that sleeps will skip runs. That is fine as long as the report shows
-enough of them.
-
-## What can make the numbers wrong
-
-- **A proxy or TUN answering for the node.** Tools in "fake-IP" mode hand out
-  addresses from `198.18.0.0/15` and terminate the connection on your own
-  machine, so every node looks about 0.5 ms away. The probe warns when it sees
-  one of those addresses, and the report flags the cell. A full-tunnel VPN is
-  different: it gives plausible-looking numbers that describe the VPN, and
-  nothing in the tool can see it. Turn them off.
-- **Connect time is not throughput.** A node can answer fast and still have a
-  thin pipe.
-- **A relayed session crosses two legs.** `--pair A B` ranks nodes by the sum of
-  the two sites' medians plus 10 ms per 1% loss. That is a model, not the real
-  session. Treat a margin under 20% as a tie.
-- **DNS is resolved once per run** and excluded from the timing.
+Per place and server: the median connect time plus `--loss-penalty` (default 10 ms)
+per 1% mean loss. `--basis worst` (default) takes the **worse** of the evening and the
+rest of the day, because a fixed table cannot know the time of day; `peak` takes the
+evening alone; `all` the overall median, which hides an evening-only collapse. A
+period with fewer than `--min-runs` runs falls back to the overall median, with a note.
+`--default average` (or a place name) adds a line for clients in no listed place.
+Sites and CSVs that do not match each other are reported, not guessed at.
 
 ## Tests
 
-    python3 -m unittest discover -s . -v
+    python3 -m unittest discover -s tools/relay-rtt -v
 
-Real sockets on loopback for the probe-to-CSV-to-report path, synthetic CSVs for
-the ranking and the peak/off-peak logic. It has also been run against real
-remote hosts, which is how the fake-IP case was found.
+Real sockets on loopback for the probe-to-CSV-to-report path, synthetic CSVs for the
+ranking, the peak/off-peak logic and the generator, and a sample table that a Rust unit
+test in `src/relay_routes.rs` also parses, so the two languages cannot drift apart.
 
 Do not commit `results/` or `nodes.txt`; they name your servers.

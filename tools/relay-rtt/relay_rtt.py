@@ -25,6 +25,7 @@ Limits (read before trusting the numbers):
 import argparse
 import csv
 import datetime as dt
+import glob
 import ipaddress
 import os
 import socket
@@ -127,8 +128,10 @@ def jitter(seq):
 
 
 # ------------------------------------------------------------------- probe
-def cmd_probe(a):
-    nodes = read_nodes(a.nodes)
+def probe_once(a, nodes, quiet=False, warn=True):
+    """One run against every node: write its CSV and return (rows, path).
+    `quiet` skips the table; `warn` prints the DNS and proxy warnings, which a
+    repeating run wants once, not every time."""
     ts = dt.datetime.now(dt.timezone.utc)
     out = a.out or os.path.join(
         "results", f"{a.site}-{ts.strftime('%Y%m%dT%H%M%SZ')}.csv")
@@ -140,10 +143,11 @@ def cmd_probe(a):
             resolved[nd["id"]] = resolve(nd["host"], nd["port"])
         except OSError as e:
             resolved[nd["id"]] = None
-            print(f"[{nd['id']}] DNS failure: {e}", file=sys.stderr)
+            if warn:
+                print(f"[{nd['id']}] DNS failure: {e}", file=sys.stderr)
         series[nd["id"]] = []
         r = resolved[nd["id"]]
-        if r is not None and is_fake_ip(r[1]):
+        if warn and r is not None and is_fake_ip(r[1]):
             print(f"[{nd['id']}] WARNING: {nd['host']} resolved to {r[1]}, an address "
                   "range used by proxy/TUN 'fake-IP' DNS. These numbers measure your "
                   "own proxy, not the node. Turn it off and run again.",
@@ -165,8 +169,9 @@ def cmd_probe(a):
 
     now = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
     offset_min = int(dt.datetime.now().astimezone().utcoffset().total_seconds() // 60)
-    print(f"{'node':<14}{'ip':<18}{'loss%':>6}{'min':>9}{'median':>9}"
-          f"{'p90':>9}{'jitter':>9}")
+    if not quiet:
+        print(f"{'node':<14}{'ip':<18}{'loss%':>6}{'min':>9}{'median':>9}"
+              f"{'p90':>9}{'jitter':>9}")
     for nd in nodes:
         r = resolved[nd["id"]]
         row = {"ts_utc": now, "site": a.site, "node": nd["id"],
@@ -186,22 +191,98 @@ def cmd_probe(a):
                 row["error"] = ";".join(f"{k}x{v}" for k, v in
                                         sorted(errs[nd["id"]].items()))
         rows.append(row)
-        f = lambda k: ("-" if row[k] in ("", None) else f"{row[k]:.1f}")
-        print(f"{nd['id']:<14}{row['ip']:<18}{row['loss_pct']:>6}"
-              f"{f('min_ms'):>9}{f('median_ms'):>9}{f('p90_ms'):>9}"
-              f"{f('jitter_ms'):>9}")
+        if not quiet:
+            f = lambda k: ("-" if row[k] in ("", None) else f"{row[k]:.1f}")
+            print(f"{nd['id']:<14}{row['ip']:<18}{row['loss_pct']:>6}"
+                  f"{f('min_ms'):>9}{f('median_ms'):>9}{f('p90_ms'):>9}"
+                  f"{f('jitter_ms'):>9}")
 
     with open(out, "w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=FIELDS)
         w.writeheader()
         w.writerows(rows)
+    return rows, out
+
+
+def run_summary(rows):
+    """One line for a repeating run: each node's median, and anything wrong."""
+    parts = []
+    for r in rows:
+        if r["median_ms"] in ("", None):
+            parts.append(f"{r['node']} DOWN")
+        else:
+            lossy = f" ({float(r['loss_pct']):.0f}% lost)" if float(r["loss_pct"]) else ""
+            ms = float(r["median_ms"])
+            parts.append(f"{r['node']} {ms:.0f} ms{lossy}" if ms >= 10
+                         else f"{r['node']} {ms:.1f} ms{lossy}")
+    return "  ".join(parts)
+
+
+def probe_repeatedly(a, nodes):
+    """Run again and again, so a three-day campaign is one command, not a
+    scheduler. Every run is written as soon as it finishes, so stopping at any
+    moment, or the machine going to sleep, loses nothing already measured."""
+    if a.out:
+        sys.exit("--out cannot be combined with --repeat-every: every run writes "
+                 "its own file in results/")
+    every = a.repeat_every * 60.0
+    end = time.time() + a.repeat_for * 3600.0
+    stop_at = dt.datetime.fromtimestamp(end).strftime("%a %d %b %H:%M")
+    print(f"Measuring {len(nodes)} node(s) from '{a.site}' every "
+          f"{a.repeat_every:g} min until {stop_at} (about {a.repeat_for:g} h).\n"
+          "Leave this window open and the computer awake. Ctrl-C stops it; "
+          "every finished run is already saved.\n")
+    runs, results_dir, first = 0, "results", True
+    next_at = time.monotonic()
+    try:
+        while True:
+            rows, path = probe_once(a, nodes, quiet=True, warn=first)
+            first, runs = False, runs + 1
+            results_dir = os.path.dirname(path) or "."
+            print(f"{dt.datetime.now().strftime('%a %H:%M')}  run {runs:<4} "
+                  f"{run_summary(rows)}", flush=True)
+            next_at += every
+            delay = next_at - time.monotonic()
+            if delay < 0:
+                # Slept through one or more slots: carry on from now, no burst.
+                next_at, delay = time.monotonic(), 0.0
+            if time.time() + delay >= end:
+                break
+            time.sleep(delay)
+    except KeyboardInterrupt:
+        print("\nStopped.")
+    print(f"\n{runs} run(s) saved in {results_dir}/")
+
+
+def cmd_probe(a):
+    nodes = read_nodes(a.nodes)
+    if a.repeat_every:
+        return probe_repeatedly(a, nodes)
+    rows, out = probe_once(a, nodes)
     print(f"\nwrote {out}")
 
 
 # ------------------------------------------------------------------ report
+def expand(patterns):
+    """Windows' cmd and PowerShell pass `results/*.csv` through unexpanded, so do it
+    here. A name that exists is used as it is; a pattern that matches nothing is an
+    error, not a silently empty report."""
+    paths = []
+    for pat in patterns:
+        if os.path.exists(pat) or not any(c in pat for c in "*?["):
+            paths.append(pat)
+            continue
+        found = sorted(glob.glob(pat))
+        if not found:
+            sys.exit(f"no files match {pat!r}. Is this the folder that holds "
+                     "the results?")
+        paths += found
+    return paths
+
+
 def load(paths):
     rows = []
-    for p in paths:
+    for p in expand(paths):
         with open(p, newline="", encoding="utf-8") as fh:
             for r in csv.DictReader(fh):
                 rows.append(r)
@@ -589,6 +670,12 @@ def main():
     p.add_argument("--interval", type=float, default=0.5, help="seconds between rounds")
     p.add_argument("--timeout", type=float, default=3.0)
     p.add_argument("--out", help="CSV path (default results/<site>-<utc>.csv)")
+    p.add_argument("--repeat-every", type=float, metavar="MINUTES",
+                   help="keep measuring, once every this many minutes, instead of "
+                        "once. Each run is written as its own file")
+    p.add_argument("--repeat-for", type=float, default=72, metavar="HOURS",
+                   help="with --repeat-every, stop after this long (default 72 = "
+                        "3 days)")
     p.set_defaults(fn=cmd_probe)
 
     r = sub.add_parser("report", help="aggregate CSV files")

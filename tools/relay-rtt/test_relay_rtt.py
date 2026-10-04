@@ -6,6 +6,7 @@ import contextlib
 import csv
 import io
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -102,7 +103,8 @@ class Statistics(unittest.TestCase):
             try:
                 with contextlib.redirect_stdout(io.StringIO()):
                     rr.cmd_probe(SimpleNamespace(nodes=nodes, site="s", samples=4,
-                                                 interval=0, timeout=1, out=out))
+                                                 interval=0, timeout=1, out=out,
+                                                 repeat_every=None, repeat_for=72))
             finally:
                 rr.connect_ms = real
             with open(out, newline="") as f:
@@ -134,7 +136,8 @@ class FakeIp(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                     rr.cmd_probe(SimpleNamespace(nodes=nodes, site="s", samples=2,
                                                  interval=0, timeout=1,
-                                                 out=os.path.join(d, "o.csv")))
+                                                 out=os.path.join(d, "o.csv"),
+                                                 repeat_every=None, repeat_for=72))
             finally:
                 rr.resolve, rr.connect_ms = real_resolve, real_connect
         self.assertIn("fake-IP", err.getvalue())
@@ -368,6 +371,137 @@ class Routes(unittest.TestCase):
                 f.write(text)
         with open(SAMPLE_FIXTURE, encoding="utf-8") as f:
             self.assertEqual(text, f.read(), "run with UPDATE_FIXTURE=1 if intended")
+
+
+class RepeatMode(unittest.TestCase):
+    """`probe --repeat-every`: a multi-day campaign as one command."""
+
+    def args(self, d, **kw):
+        base = dict(nodes=write_nodes(d, "up 127.0.0.1 9\n"), site="lab", samples=2,
+                    interval=0, timeout=1, out=None, repeat_every=0.02,
+                    repeat_for=0.0008)  # every 1.2 s for about 2.9 s
+        base.update(kw)
+        return SimpleNamespace(**base)
+
+    def run_in(self, d, args):
+        old, buf = os.getcwd(), io.StringIO()
+        os.chdir(d)
+        real = rr.connect_ms
+        rr.connect_ms = lambda *a, **k: (1.0, None)
+        try:
+            with contextlib.redirect_stdout(buf):
+                rr.cmd_probe(args)
+        finally:
+            rr.connect_ms = real
+            os.chdir(old)
+        return buf.getvalue()
+
+    def test_it_repeats_and_writes_one_file_per_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = self.run_in(d, self.args(d))
+            files = sorted(os.listdir(os.path.join(d, "results")))
+        self.assertGreaterEqual(len(files), 2, files)
+        self.assertEqual(len(files), len(set(files)), "two runs wrote the same file")
+        self.assertIn("run 1", out)
+        self.assertIn("run 2", out)
+        self.assertIn("up 1.0 ms", out)  # under 10 ms one decimal, so 0.4 never reads as "0"
+        self.assertRegex(out, r"\d+ run\(s\) saved in results/")
+        runs = int(re.search(r"(\d+) run\(s\) saved", out).group(1))
+        # 1.2 s apart over about 2.9 s: runs at 0, 1.2, 2.4. Not dozens.
+        self.assertLessEqual(runs, 4, "the loop is not waiting between runs")
+
+    def test_every_run_is_complete_and_loads_in_the_report(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.run_in(d, self.args(d))
+            paths = [os.path.join(d, "results", f)
+                     for f in os.listdir(os.path.join(d, "results"))]
+            text, code = run_report(paths)
+        self.assertIsNone(code)
+        self.assertIn("lab", text)
+
+    def interrupted(self, d, when):
+        """Run with Ctrl-C arriving at the first sleep that satisfies `when`."""
+        real_sleep = rr.time.sleep
+
+        def interrupt(secs):
+            if when(secs):
+                raise KeyboardInterrupt
+        rr.time.sleep = interrupt
+        try:
+            out = self.run_in(d, self.args(d, repeat_for=0.002))  # bounded: ~7 s at worst
+        finally:
+            rr.time.sleep = real_sleep
+        return out, os.listdir(os.path.join(d, "results"))
+
+    def test_ctrl_c_between_runs_keeps_every_finished_run(self):
+        # The long wait between runs is the only sleep of a minute or so.
+        with tempfile.TemporaryDirectory() as d:
+            out, files = self.interrupted(d, lambda secs: secs >= 0.5)
+        self.assertEqual(len(files), 1)
+        self.assertIn("Stopped.", out)
+        self.assertIn("1 run(s) saved", out)
+
+    def test_ctrl_c_during_a_run_loses_only_that_run_and_does_not_crash(self):
+        # The probe sleeps between its own samples; an interrupt there is mid-run,
+        # before that run's file is written. Honest about it: one run, a few seconds.
+        with tempfile.TemporaryDirectory() as d:
+            out, files = self.interrupted(d, lambda secs: secs < 0.5)
+        self.assertEqual(files, [])
+        self.assertIn("Stopped.", out)
+        self.assertIn("0 run(s) saved", out)
+
+    def test_a_down_node_is_called_down_not_zero(self):
+        rows = [row("lab", "hk", 38, "2026-01-01T00:00:00Z", 0),
+                row("lab", "sh", "", "2026-01-01T00:00:00Z", 0, loss=100.0)]
+        line = rr.run_summary(rows)
+        self.assertIn("hk 38 ms", line)
+        self.assertIn("sh DOWN", line)
+
+    def test_loss_is_visible_in_the_one_line_summary(self):
+        line = rr.run_summary([row("lab", "hk", 40, "2026-01-01T00:00:00Z", 0, loss=15.0)])
+        self.assertIn("hk 40 ms (15% lost)", line)
+
+    def test_out_cannot_be_combined_with_repeating(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(SystemExit) as cm:
+                self.run_in(d, self.args(d, out="x.csv"))
+        self.assertIn("--out cannot be combined", str(cm.exception.code))
+
+    def test_warnings_are_printed_once_not_every_run(self):
+        with tempfile.TemporaryDirectory() as d:
+            real_resolve = rr.resolve
+            rr.resolve = lambda host, port: (socket.AF_INET, "198.18.0.50")
+            err = io.StringIO()
+            try:
+                with contextlib.redirect_stderr(err):
+                    self.run_in(d, self.args(d))
+            finally:
+                rr.resolve = real_resolve
+        self.assertEqual(err.getvalue().count("WARNING"), 1, err.getvalue())
+
+
+class Wildcards(unittest.TestCase):
+    """cmd.exe and PowerShell do not expand `results/*.csv`; the tool must."""
+
+    def test_a_pattern_is_expanded_by_the_tool(self):
+        with tempfile.TemporaryDirectory() as d:
+            for i in (1, 2):
+                write_csv(d, f"home-{i}.csv", [row("home", "hk", 40, "2026-01-01T0%d:00:00Z" % i, 0)])
+            text, code = run_report([os.path.join(d, "*.csv")])
+        self.assertIsNone(code)
+        self.assertIn("runs per site: home=2", text)
+
+    def test_a_pattern_matching_nothing_says_so(self):
+        with tempfile.TemporaryDirectory() as d:
+            _, code = run_report([os.path.join(d, "*.csv")])
+        self.assertIn("no files match", str(code))
+
+    def test_an_existing_file_with_odd_characters_is_used_as_it_is(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = write_csv(d, "home[1].csv", [row("home", "hk", 40, "2026-01-01T01:00:00Z", 0)])
+            text, code = run_report([path])
+        self.assertIsNone(code)
+        self.assertIn("hk", text)
 
 
 class EndToEnd(unittest.TestCase):

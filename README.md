@@ -48,6 +48,7 @@ More detail, by question:
 
 | If you want to know | Read |
 |---|---|
+| How to measure latency to your relays, step by step | [docs/measuring-latency.md](docs/measuring-latency.md) |
 | How to run several relay servers and choose the nearest | [docs/relay-routing.md](docs/relay-routing.md) |
 | How the API server relates to `hbbs` and `hbbr`, and the login-token trap | [docs/api-server.md](docs/api-server.md) |
 | Every setting and console command, and how to reach the console in a container | [docs/environment-variables.md](docs/environment-variables.md) |

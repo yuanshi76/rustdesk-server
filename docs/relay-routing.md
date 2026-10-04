@@ -32,7 +32,7 @@ Three small files. Everything else is generated.
 | File | What goes in it | Where it comes from |
 |---|---|---|
 | `nodes.txt` | your relays: `id  host  port  [region]` | you. The port is the one **clients** reach, e.g. the host-side mapping of hbbr's 21117 |
-| `sites.txt` | the places your clients are, and the public network each uses | you, with one `curl` per place (below) |
+| `sites.txt` | the places your clients are, and the public network each uses | you, with one `curl` per place (see [measuring-latency.md](measuring-latency.md)) |
 | `relay_routes.txt` | the routing table | **generated** from your measurements |
 
 Examples of the first two are in `tools/relay-rtt/` (`nodes.example.txt`,
@@ -57,48 +57,12 @@ choice, and that is the relay the other side is then told to use. The controllin
 side's own setting did not appear in the connection code I read, but there is no
 reason to set it either.
 
-**2. Find each place's public address.** Run this *at* that place, with any
-proxy or VPN off:
-
-```
-curl https://ifconfig.me
-```
-
-Put the network around it in `sites.txt` (`203.0.113.57` becomes
-`203.0.113.0/24`; for IPv6 use the `/48`). A home connection can change address,
-so re-check it now and then.
-
-**3. Measure, from each place.** Turn off any proxy, TUN or VPN first (the tool
-warns if it sees one). Then run it at least six times a day for three days,
-including the evening, from each place:
-
-```
-python3 relay_rtt.py probe --nodes nodes.txt --site home
-```
-
-Scheduling snippets are in `tools/relay-rtt/README.md`. Collect every CSV into one
-folder.
-
-**4. Check it is worth doing.**
-
-```
-python3 relay_rtt.py report results/*.csv --pair home school --periods
-```
-
-If the best relay is within about 20% of the second best for every pair that
-matters, you gain little: leave `hbbs` as it is. If one relay is clearly better,
-or the ranking changes in the evening, carry on.
-
-**5. Generate the table.**
-
-```
-python3 relay_rtt.py routes results/*.csv --sites sites.txt --out relay_routes.txt
-```
-
-It ranks each relay by the **worse** of its evening and daytime figure, because a
-fixed table cannot know the time of day. It never writes a number measured
-through a proxy. Read the "Notes" it prints. Add `--default average` if you also
-want a line for clients that are in none of your places.
+**2 to 5. Measure, then generate the table.** This is the part that takes three
+days of waiting, and it has its own guide: **[measuring-latency.md](measuring-latency.md)**.
+In short: you run one script from each place your clients are (with any VPN or
+proxy off), write down each place's public address, bring the results together,
+check whether a second relay is worth it, and generate `relay_routes.txt`. Come
+back here for steps 6 to 8.
 
 **6. Give the file to `hbbs`.** Put it where `hbbs` can read it and set
 `RELAY_ROUTES`:
