@@ -1,7 +1,9 @@
 # The upstream rustdesk/rustdesk-server commit this fork's patch series sits on.
 # .github/workflows/upstream-watch.yaml reads this file, compares
 # UPSTREAM_RELEASE with upstream's latest GitHub release, and opens a PR when
-# they differ. Rebasing uses UPSTREAM_COMMIT as the old base.
+# they differ. UPSTREAM_COMMIT is the upstream commit most recently merged; the
+# sync merges the new release into main, so nothing is rebased and it is for the
+# record only.
 #
 # UPSTREAM_COMMIT is deliberately *ahead* of the UPSTREAM_RELEASE tag: it is the
 # head of upstream master at the time of the rebase, which carries the UDP

@@ -1,6 +1,6 @@
 name: upstream-watch
 
-# Watches rustdesk/rustdesk-server for a new release, rebases this fork's patch
+# Watches rustdesk/rustdesk-server for a new release, merges it into this fork's
 # series onto it, and opens a PR for a human to review. It never merges.
 #
 # Two GitHub behaviours this has to work around:
@@ -18,8 +18,8 @@ name: upstream-watch
 #   - Checkout and the keepalive commit use the built-in GITHUB_TOKEN, so a missing
 #     or broken PAT cannot break them. The keepalive wants it: a push made with it
 #     triggers no workflows, which is the point of a no-op activity commit.
-#   - Publishing the rebased branch and opening the pull request use the PAT. The
-#     rebased series contains commits that change files under .github/workflows,
+#   - Publishing the sync branch and opening the pull request use the PAT. The
+#     branch contains upstream's commits, which can change files under .github/workflows,
 #     and GitHub refuses a push containing those from GITHUB_TOKEN, which cannot
 #     be granted the `workflows` permission. Only a PAT with `workflow` scope (or
 #     a fine-grained token with Workflows read/write) can publish it.
@@ -82,7 +82,7 @@ jobs:
           fi
 
   # A manual run only, and deliberately not a dependency of anything: it must
-  # be able to fail loudly without blocking the rebase or the keepalive. It is
+  # be able to fail loudly without blocking the merge or the keepalive. It is
   # NOT continue-on-error - a tolerated failure shows up as a green run, which
   # is worse than no check at all.
   token-check:
@@ -100,7 +100,7 @@ jobs:
         run: |
           set -u
           if [ -z "${GH_TOKEN:-}" ]; then
-            echo "::warning::UPSTREAM_SYNC_TOKEN is not set. The sync job will still rebase and push, but the pull request it opens will not trigger CI."
+            echo "::warning::UPSTREAM_SYNC_TOKEN is not set. The sync job will still merge, but the pull request it opens will not trigger CI."
             exit 0
           fi
           if ! who=$(gh api user --jq .login 2>/tmp/err); then
@@ -117,7 +117,7 @@ jobs:
           echo "Can reach ${GITHUB_REPOSITORY}. The token is good."
 
   sync:
-    name: Rebase onto ${{ needs.check.outputs.latest }}
+    name: Merge ${{ needs.check.outputs.latest }}
     needs: check
     if: needs.check.outputs.changed == 'true'
     runs-on: ubuntu-22.04
@@ -142,30 +142,34 @@ jobs:
           git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
           git fetch upstream --tags --force
 
-      - name: Rebase the patch series
-        id: rebase
+      # A MERGE, not a rebase. A rebased series has new commit hashes, so its merge
+      # base with main is still the old upstream commit. The pull request then adds
+      # files such as UPSTREAM_VERSION on both sides with different content, can
+      # never be merged, and - because GitHub builds no merge ref for a conflicting
+      # pull request - gets no CI at all. Found by running this workflow against a
+      # simulated release. Merging the release into main instead gives a mergeable
+      # PR whose diff is upstream's change, keeps every commit and its authorship,
+      # and needs no force-push.
+      - name: Merge the upstream release
+        id: merge
         continue-on-error: true
         run: |
           set -eu
-          . ./UPSTREAM_VERSION
           LATEST='${{ needs.check.outputs.latest }}'
           BRANCH="upstream-sync/${LATEST}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           git checkout -B "$BRANCH"
-          # Replay everything this fork adds on top of the recorded base onto
-          # the new release tag.
-          if ! git rebase --onto "$LATEST" "$UPSTREAM_COMMIT" "$BRANCH" > /tmp/rebase.log 2>&1; then
-            {
-              echo "conflict=true"
-            } >> "$GITHUB_OUTPUT"
-            git rebase --abort || true
-            cat /tmp/rebase.log
+          if ! git merge --no-ff -m "Merge upstream ${LATEST}" "$LATEST" > /tmp/merge.log 2>&1; then
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            cat /tmp/merge.log
+            git merge --abort || true
             exit 1
           fi
+          cat /tmp/merge.log
           echo "conflict=false" >> "$GITHUB_OUTPUT"
 
       - name: Advance the submodule pointer
-        if: steps.rebase.outcome == 'success'
+        if: steps.merge.outcome == 'success'
         run: |
           set -eu
           LATEST='${{ needs.check.outputs.latest }}'
@@ -184,7 +188,7 @@ jobs:
           echo "hbb_common is now $(git rev-parse HEAD:libs/hbb_common)"
 
       - name: Record the new base
-        if: steps.rebase.outcome == 'success'
+        if: steps.merge.outcome == 'success'
         run: |
           set -eu
           LATEST='${{ needs.check.outputs.latest }}'
@@ -204,12 +208,12 @@ jobs:
           git commit -m "chore: record upstream ${LATEST} as the base"
 
       - name: Install toolchain
-        if: steps.rebase.outcome == 'success'
+        if: steps.merge.outcome == 'success'
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build and test the rebased tree
+      - name: Build and test the merged tree
         id: verify
-        if: steps.rebase.outcome == 'success'
+        if: steps.merge.outcome == 'success'
         continue-on-error: true
         run: |
           cargo build --all-targets
@@ -224,21 +228,21 @@ jobs:
         run: cargo test --release --test ws_soak -- --ignored --nocapture
 
       - name: Push the branch
-        if: steps.rebase.outcome == 'success'
+        if: steps.merge.outcome == 'success'
         env:
           PUSH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: |
           set -eu
           if [ -z "${PUSH_TOKEN:-}" ]; then
-            echo "::error::UPSTREAM_SYNC_TOKEN is not set. The rebased branch changes files under .github/workflows, which GITHUB_TOKEN is not allowed to push."
+            echo "::error::UPSTREAM_SYNC_TOKEN is not set. The sync branch can change files under .github/workflows, which GITHUB_TOKEN is not allowed to push."
             exit 1
           fi
           git push --force \
             "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
-            "${{ steps.rebase.outputs.branch }}"
+            "${{ steps.merge.outputs.branch }}"
 
       - name: Open the PR
-        if: steps.rebase.outcome == 'success'
+        if: steps.merge.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
@@ -246,11 +250,11 @@ jobs:
           LATEST='${{ needs.check.outputs.latest }}'
           CURRENT='${{ needs.check.outputs.current }}'
           BODY=$(cat <<EOT
-          Automated rebase of this fork's patch series from upstream \`${CURRENT}\` onto \`${LATEST}\`.
+          Automated merge of upstream \`${LATEST}\` (previously \`${CURRENT}\`) into this fork. The diff is upstream's change; every fork commit and its authorship is untouched.
 
           | check | result |
           |---|---|
-          | rebase | clean |
+          | merge | clean |
           | \`cargo build\` + \`cargo test\` | ${{ steps.verify.outcome }} |
           | 10 minute soak | ${{ steps.soak.outcome }} |
 
@@ -272,15 +276,15 @@ jobs:
           # the branch is pushed either way, so a silent failure would look like
           # success while nobody ever sees the PR.
           if ! gh pr create \
-            --title "Rebase onto upstream ${LATEST}" \
+            --title "Merge upstream ${LATEST}" \
             --body "$BODY" \
             --base main \
-            --head "${{ steps.rebase.outputs.branch }}" 2>/tmp/pr.err; then
+            --head "${{ steps.merge.outputs.branch }}" 2>/tmp/pr.err; then
             if grep -qi "already exists" /tmp/pr.err; then
               echo "A pull request for this branch is already open."
             else
               cat /tmp/pr.err
-              echo "::error::Could not open the pull request. The rebase succeeded and ${{ steps.rebase.outputs.branch }} is pushed - open the PR by hand, and check UPSTREAM_SYNC_TOKEN."
+              echo "::error::Could not open the pull request. The merge succeeded and ${{ steps.merge.outputs.branch }} is pushed - open the PR by hand, and check UPSTREAM_SYNC_TOKEN."
               exit 1
             fi
           fi
@@ -289,32 +293,32 @@ jobs:
           fi
 
       - name: Open an issue on conflict
-        if: steps.rebase.outcome == 'failure'
+        if: steps.merge.outcome == 'failure'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
           LATEST='${{ needs.check.outputs.latest }}'
-          TITLE="Upstream ${LATEST} does not rebase cleanly"
+          TITLE="Upstream ${LATEST} does not merge cleanly"
           if gh issue list --state open --search "$TITLE in:title" --json title --jq '.[].title' | grep -qxF "$TITLE"; then
             echo "Issue already open."
             exit 0
           fi
           {
-            echo "Rebasing this fork's patch series onto upstream \`${LATEST}\` hit a conflict, so no PR was opened."
+            echo "Merging upstream \`${LATEST}\` into this fork hit a conflict, so no PR was opened."
             echo
             echo "Resolve it by hand:"
             echo
             echo '```'
             echo "git fetch upstream --tags"
             echo "git checkout -b upstream-sync/${LATEST} main"
-            echo "git rebase --onto ${LATEST} \$(. ./UPSTREAM_VERSION; echo \$UPSTREAM_COMMIT)"
+            echo "git merge ${LATEST}"
             echo '```'
             echo
-            echo "Rebase output:"
+            echo "Merge output:"
             echo
             echo '```'
-            tail -c 8000 /tmp/rebase.log 2>/dev/null || echo "(no log captured)"
+            tail -c 8000 /tmp/merge.log 2>/dev/null || echo "(no log captured)"
             echo '```'
           } > /tmp/issue.md
           gh issue create --title "$TITLE" --body-file /tmp/issue.md
