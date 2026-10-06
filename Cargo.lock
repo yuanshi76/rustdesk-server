@@ -1696,12 +1696,13 @@ dependencies = [
  "hbb_common",
  "headers",
  "http 0.2.7",
- "ipnetwork",
+ "ipnetwork 0.20.0",
  "jsonwebtoken",
  "lazy_static",
  "local-ip-address",
  "mac_address",
  "machine-uid 0.2.0",
+ "maxminddb",
  "minreq",
  "once_cell",
  "openssl",
@@ -2109,6 +2110,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipnetwork"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf370abdafd54d13e54a620e8c3e1145f28e46cc9d704bc6d94414559df41763"
+
+[[package]]
 name = "is-terminal"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2381,6 +2388,19 @@ name = "matchit"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73cbba799671b762df5a175adf59ce145165747bb891505c43d09aefbbf38beb"
+
+[[package]]
+name = "maxminddb"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b43d2458d977b610b04a3858e6504f06133663d303a1a0606601b530bfc9bc6"
+dependencies = [
+ "ipnetwork 0.21.1",
+ "memchr",
+ "memmap2",
+ "serde",
+ "thiserror 2.0.19",
+]
 
 [[package]]
 name = "md-5"

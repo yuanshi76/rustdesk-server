@@ -762,3 +762,35 @@ separate machines. Guide: `docs/switching-relays.md`.
 
 `cargo fmt` run over the tree also reformats `libs/hbb_common` and two unrelated
 files; revert those, format only what you changed.
+
+
+### Geo routing: nearest relay by where a device is (2026-10-06)
+
+Why: the user travels and uses phones, so a table keyed by address cannot work, and
+`hbbs` can neither measure a device's latency to the relays nor talk to the relays.
+Chosen from four options (GeoIP in `hbbs`, GeoDNS, a script on each device, relays
+probing the device); GeoIP because it needs nothing on the clients or the relays.
+
+Built: `src/relay_geo.rs` (haversine distance, relay locations file, an MMDB reader
+that takes `location.latitude`/`longitude` by path, memory-mapped because the City file
+is over 100 MB), `choose_from` split out of `RouteTable::choose`, and in
+`pick_relay` each end's costs come from its routing-table line, else its location,
+else nothing. Reason strings `routes`, `geo`, `routes+geo`. `GEO_DB` and
+`RELAY_LOCATIONS`, reloaded like the routing table; both files fail soft.
+1 ms per 50 km is a ranking device, not a latency model.
+
+Tests: unit tests on a 1.3 KB fixture `tests/data/geo-test.mmdb` (regenerate with
+`tests/data/make-geo-fixture.py`; documentation ranges, so it says nothing about real
+networks) and three real-`hbbs` tests; four mutations (geo unused, locations never
+reloaded, latitude and longitude swapped, table ignored where geo knows the address)
+each fail at least one.
+
+NOT verified: the real DB-IP file. The reader asks for `location.latitude` and
+`location.longitude`, which is the layout DB-IP documents (it says its MMDB works with
+MaxMind readers) but this was tested only against the fixture. First thing to do with a
+real file: `test-relay <a known public address>` and read where it was placed.
+
+Lockfile trap: `cargo add` re-resolved the lock and merged `signature 1.5.0` into
+`2.2.0`, which does not compile (`ed25519 1.5.0` needs the old trait). The lock was
+restored and the new crates added by hand; build with `--locked`, and do not let cargo
+regenerate it.

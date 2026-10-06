@@ -1,7 +1,8 @@
 use crate::common::*;
 use crate::jwt;
 use crate::peer::*;
-use crate::relay_routes::{normalize, RouteTable};
+use crate::relay_geo::{GeoDb, Locations, Point};
+use crate::relay_routes::{choose_from, normalize, RouteTable};
 use hbb_common::{
     allow_err, bail,
     bytes::{Bytes, BytesMut},
@@ -137,6 +138,20 @@ struct RouteState {
     error: Option<String>,
 }
 
+/// The GeoIP database and the relay locations, and what is known about the files
+/// they came from. Both are needed before an address can be turned into a distance.
+#[derive(Default)]
+struct GeoState {
+    db_path: Option<PathBuf>,
+    db: Option<GeoDb>,
+    db_seen: Option<Option<(SystemTime, u64)>>,
+    db_error: Option<String>,
+    loc_path: Option<PathBuf>,
+    locations: Option<Locations>,
+    loc_seen: Option<Option<(SystemTime, u64)>>,
+    loc_error: Option<String>,
+}
+
 /// The relay the operator has chosen for every new session, if any, and the file
 /// that remembers it across a restart.
 #[derive(Default)]
@@ -241,6 +256,7 @@ pub struct RendezvousServer {
     relay_routes: Arc<StdMutex<RouteState>>,
     relay_pins: Arc<StdMutex<HashMap<PinKey, RelayPin>>>,
     relay_preferred: Arc<StdMutex<PreferredRelay>>,
+    relay_geo: Arc<StdMutex<GeoState>>,
 }
 
 enum LoopFailure {
@@ -307,6 +323,7 @@ impl RendezvousServer {
             relay_routes: Default::default(),
             relay_pins: Default::default(),
             relay_preferred: Default::default(),
+            relay_geo: Default::default(),
         };
         log::info!("mask: {:?}", rs.inner.mask);
         log::info!("local-ip: {:?}", rs.inner.local_ip);
@@ -318,6 +335,23 @@ impl RendezvousServer {
         RELAY_PIN_TTL_MS.store(pin_ttl * 1000, Ordering::SeqCst);
         log::info!("RELAY_PIN_TTL={}s", pin_ttl);
         rs.load_preferred_relay();
+        {
+            let (db, loc) = (get_arg("geo-db"), get_arg("relay-locations"));
+            if db.is_empty() != loc.is_empty() {
+                log::warn!(
+                    "geo routing needs both GEO_DB and RELAY_LOCATIONS; with only one it does nothing"
+                );
+            }
+            if let Ok(mut g) = rs.relay_geo.lock() {
+                if !db.is_empty() {
+                    g.db_path = Some(PathBuf::from(&db));
+                }
+                if !loc.is_empty() {
+                    g.loc_path = Some(PathBuf::from(&loc));
+                }
+            }
+            rs.reload_relay_geo();
+        }
         let routes_path = get_arg("relay-routes");
         if !routes_path.is_empty() {
             log::info!("RELAY_ROUTES={}", routes_path);
@@ -462,6 +496,7 @@ impl RendezvousServer {
             tokio::select! {
                 _ = timer_check_relay.tick() => {
                     self.reload_relay_routes();
+                    self.reload_relay_geo();
                     if self.relay_servers0.len() > 1 {
                         let rs = self.relay_servers0.clone();
                         let tx = self.tx.clone();
@@ -1389,15 +1424,23 @@ impl RendezvousServer {
             }
         }
 
-        let routed = self.relay_routes.lock().ok().and_then(|st| {
-            st.table
-                .as_ref()
-                .and_then(|t| t.choose(live.as_slice(), pa, pb))
-        });
+        // What is known about each end: the routing table's line for it, or failing
+        // that the relays' distances from where the address is located.
+        let (sides, sources): (Vec<_>, Vec<_>) = [pa, pb]
+            .into_iter()
+            .filter_map(|ip| self.side_costs(ip))
+            .unzip();
+        let routed = choose_from(live.as_slice(), &sides);
         let pick = match routed {
             Some(c) => RelayPick {
                 relay: c.relay,
-                reason: "routes",
+                reason: if sources.iter().all(|s| *s == "routes") {
+                    "routes"
+                } else if sources.iter().all(|s| *s == "geo") {
+                    "geo"
+                } else {
+                    "routes+geo"
+                },
                 costs: c.costs,
             },
             None => {
@@ -1428,6 +1471,29 @@ impl RendezvousServer {
             );
         }
         pick
+    }
+
+    /// What is known about one address: the routing table's line for it, else its
+    /// distance from each relay by location, else nothing.
+    fn side_costs(&self, ip: IpAddr) -> Option<(HashMap<String, f64>, &'static str)> {
+        let from_table = self
+            .relay_routes
+            .lock()
+            .ok()
+            .and_then(|st| st.table.as_ref().and_then(|t| t.costs_for(ip)));
+        if let Some(costs) = from_table {
+            return Some((costs, "routes"));
+        }
+        let at = self.locate(ip)?;
+        let g = self.relay_geo.lock().ok()?;
+        Some((g.locations.as_ref()?.costs_from(at), "geo"))
+    }
+
+    /// Where the GeoIP database puts an address, if geo routing is set up.
+    fn locate(&self, ip: IpAddr) -> Option<Point> {
+        let g = self.relay_geo.lock().ok()?;
+        g.locations.as_ref()?;
+        g.db.as_ref()?.locate(ip)
     }
 
     /// A held choice that has not expired and names a relay that is still healthy.
@@ -1610,6 +1676,90 @@ impl RendezvousServer {
         }
     }
 
+    /// Re-read the GeoIP database and the relay locations when either file changed.
+    /// Called every few seconds, next to `reload_relay_routes`, with the same rule: a
+    /// file that cannot be read is reported once and the previous one stays in force.
+    fn reload_relay_geo(&self) {
+        fn stamp(path: &std::path::Path) -> Option<(SystemTime, u64)> {
+            let m = std::fs::metadata(path).ok()?;
+            Some((m.modified().ok()?, m.len()))
+        }
+        let Ok(mut g) = self.relay_geo.lock() else {
+            return;
+        };
+        let mut changed = false;
+        if let Some(path) = g.db_path.clone() {
+            let now = stamp(&path);
+            if g.db_seen != Some(now) {
+                g.db_seen = Some(now);
+                let loaded = match now {
+                    Some(_) => GeoDb::open(&path),
+                    None => Err(format!("cannot read {}", path.display())),
+                };
+                match loaded {
+                    Ok(db) => {
+                        log::info!("geo database: loaded {}", path.display());
+                        g.db = Some(db);
+                        g.db_error = None;
+                        changed = true;
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "geo database: {err}; keeping {}",
+                            if g.db.is_some() {
+                                "the previous one"
+                            } else {
+                                "none"
+                            }
+                        );
+                        g.db_error = Some(err);
+                    }
+                }
+            }
+        }
+        if let Some(path) = g.loc_path.clone() {
+            let now = stamp(&path);
+            if g.loc_seen != Some(now) {
+                g.loc_seen = Some(now);
+                let loaded = match now {
+                    Some(_) => Locations::load(&path),
+                    None => Err(format!("cannot read {}", path.display())),
+                };
+                match loaded {
+                    Ok(l) => {
+                        log::info!(
+                            "relay locations: loaded {} relay(s) from {}",
+                            l.len(),
+                            path.display()
+                        );
+                        g.locations = Some(l);
+                        g.loc_error = None;
+                        changed = true;
+                    }
+                    Err(err) => {
+                        log::error!(
+                            "relay locations: {}: {err}; keeping {}",
+                            path.display(),
+                            if g.locations.is_some() {
+                                "the previous list"
+                            } else {
+                                "none"
+                            }
+                        );
+                        g.loc_error = Some(err);
+                    }
+                }
+            }
+        }
+        drop(g);
+        if changed {
+            // Decisions made under the old data are not worth keeping.
+            if let Ok(mut pins) = self.relay_pins.lock() {
+                pins.clear();
+            }
+        }
+    }
+
     async fn check_cmd(&self, cmd: &str) -> String {
         use std::fmt::Write as _;
 
@@ -1780,6 +1930,11 @@ impl RendezvousServer {
                     if let (Ok(a), Ok(b)) = (first.parse::<IpAddr>(), second.parse::<IpAddr>()) {
                         let pick = self.pick_relay(a, b, false);
                         let _ = writeln!(res, "relay: {} ({})", pick.relay, pick.reason);
+                        for ip in [a, b] {
+                            if let Some(p) = self.locate(ip) {
+                                let _ = writeln!(res, "located {ip}: {:.2},{:.2}", p.lat, p.lon);
+                            }
+                        }
                         for (relay, cost) in &pick.costs {
                             let _ = writeln!(res, "{relay}={cost}");
                         }
@@ -1807,6 +1962,54 @@ impl RendezvousServer {
                             if let Some(err) = &st.error {
                                 let _ = writeln!(res, "last error: {err}");
                             }
+                        }
+                    }
+                }
+                if let Ok(g) = self.relay_geo.lock() {
+                    match (&g.db_path, &g.loc_path) {
+                        (None, None) => {
+                            let _ = writeln!(
+                                res,
+                                "no geo routing configured (GEO_DB, RELAY_LOCATIONS)"
+                            );
+                        }
+                        (db, loc) => {
+                            let _ = writeln!(
+                                res,
+                                "geo database: {}",
+                                match (db, &g.db, &g.db_error) {
+                                    (None, _, _) => "not configured".to_owned(),
+                                    (Some(p), Some(_), None) => format!("{} (loaded)", p.display()),
+                                    (Some(p), Some(_), Some(e)) => {
+                                        format!("{} (previous kept: {e})", p.display())
+                                    }
+                                    (Some(p), None, e) => format!(
+                                        "{} (NOT loaded: {})",
+                                        p.display(),
+                                        e.clone().unwrap_or_default()
+                                    ),
+                                }
+                            );
+                            let _ = writeln!(
+                                res,
+                                "relay locations: {}",
+                                match (loc, &g.locations, &g.loc_error) {
+                                    (None, _, _) => "not configured".to_owned(),
+                                    (Some(p), Some(l), None) => {
+                                        format!("{} ({} relays)", p.display(), l.len())
+                                    }
+                                    (Some(p), Some(l), Some(e)) => format!(
+                                        "{} ({} relays; previous kept: {e})",
+                                        p.display(),
+                                        l.len()
+                                    ),
+                                    (Some(p), None, e) => format!(
+                                        "{} (NOT loaded: {})",
+                                        p.display(),
+                                        e.clone().unwrap_or_default()
+                                    ),
+                                }
+                            );
                         }
                     }
                 }

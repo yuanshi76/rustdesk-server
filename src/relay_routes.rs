@@ -143,39 +143,51 @@ impl RouteTable {
     /// enough to decide. Ties go to the earliest in `healthy`. The answer does not
     /// depend on which of the two is the controller.
     pub fn choose(&self, healthy: &[String], a: IpAddr, b: IpAddr) -> Option<Choice> {
-        if healthy.is_empty() {
-            return None;
-        }
-        let sides: Vec<&Rule> = [a, b]
+        let sides: Vec<HashMap<String, f64>> = [a, b]
             .into_iter()
-            .filter_map(|ip| self.lookup(ip))
+            .filter_map(|ip| self.costs_for(ip))
             .collect();
-        if sides.is_empty() {
-            return None;
-        }
-        let costs: Vec<(String, f64)> = healthy
-            .iter()
-            .map(|relay| {
-                let key = normalize(relay);
-                let total = sides
-                    .iter()
-                    .map(|s| s.costs.get(&key).copied().unwrap_or(UNLISTED_COST_MS))
-                    .sum();
-                (relay.clone(), total)
-            })
-            .collect();
-        let mut best = 0;
-        for (i, (_, cost)) in costs.iter().enumerate() {
-            if *cost < costs[best].1 {
-                best = i;
-            }
-        }
-        Some(Choice {
-            relay: costs[best].0.clone(),
-            cost_ms: costs[best].1,
-            costs,
-        })
+        choose_from(healthy, &sides)
     }
+
+    /// What the table says about one address: relay -> milliseconds, from the
+    /// most specific line containing it, or `None` if no line does.
+    pub fn costs_for(&self, ip: IpAddr) -> Option<HashMap<String, f64>> {
+        self.lookup(ip).map(|r| r.costs.clone())
+    }
+}
+
+/// The cheapest of `healthy` given what is known about each end of the session,
+/// one map (relay -> milliseconds) per end that is known at all. `None` when
+/// nothing is known about either end, or nothing is healthy. A relay an end's map
+/// does not mention costs `UNLISTED_COST_MS` for that end. Ties go to the earliest
+/// in `healthy`.
+pub fn choose_from(healthy: &[String], sides: &[HashMap<String, f64>]) -> Option<Choice> {
+    if healthy.is_empty() || sides.is_empty() {
+        return None;
+    }
+    let costs: Vec<(String, f64)> = healthy
+        .iter()
+        .map(|relay| {
+            let key = normalize(relay);
+            let total = sides
+                .iter()
+                .map(|s| s.get(&key).copied().unwrap_or(UNLISTED_COST_MS))
+                .sum();
+            (relay.clone(), total)
+        })
+        .collect();
+    let mut best = 0;
+    for (i, (_, cost)) in costs.iter().enumerate() {
+        if *cost < costs[best].1 {
+            best = i;
+        }
+    }
+    Some(Choice {
+        relay: costs[best].0.clone(),
+        cost_ms: costs[best].1,
+        costs,
+    })
 }
 
 #[cfg(test)]

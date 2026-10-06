@@ -49,6 +49,7 @@ More detail, by question:
 | If you want to know | Read |
 |---|---|
 | How to measure latency to your relays, step by step | [docs/measuring-latency.md](docs/measuring-latency.md) |
+| How to send each device to the nearest relay by where it is, wherever it travels | [docs/geo-routing.md](docs/geo-routing.md) |
 | How to switch between several relay servers with one client configuration | [docs/switching-relays.md](docs/switching-relays.md) |
 | How to run several relay servers and choose the nearest | [docs/relay-routing.md](docs/relay-routing.md) |
 | How the API server relates to `hbbs` and `hbbr`, and the login-token trap | [docs/api-server.md](docs/api-server.md) |
@@ -140,6 +141,10 @@ websockets.
 
 AGPL-3.0, unchanged from upstream. Upstream copyright notices and the fork's
 commit authorship are preserved.
+
+This project does not include or redistribute any location database. If you use the
+free "IP to City Lite" file described in [docs/geo-routing.md](docs/geo-routing.md),
+its data is by [DB-IP.com](https://db-ip.com) under CC BY 4.0, which asks for that credit.
 
 ---
 

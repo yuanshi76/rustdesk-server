@@ -119,6 +119,10 @@ it answers. (The server probes every relay once every three seconds.)
 
 ## Phones, and laptops that travel
 
+**The better answer is [geo-routing.md](geo-routing.md):** `hbbs` places any address on a
+map with a free location database and picks the nearest relay, so nothing needs
+updating when an address changes. What follows is the manual alternative.
+
 The table matches on the address `hbbs` sees, so a device whose address keeps
 changing will not match a line you wrote for one place. What happens then:
 

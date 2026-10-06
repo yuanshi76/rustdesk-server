@@ -119,17 +119,27 @@ struct Pair {
     a: Ws,
     b: Ws,
     pk: String,
+    /// The controlled peer's ID, which differs per pair so that pairs on one hbbs
+    /// do not collide.
+    id: String,
 }
 
 impl Pair {
     async fn connect(ws_port: i32, pk: &str) -> Self {
-        let mut b = connect(ws_port, Some(B_IP)).await;
-        register_pk(&mut b, "route-b").await;
-        let a = connect(ws_port, Some(A_IP)).await;
+        Self::connect_from(ws_port, pk, A_IP, B_IP).await
+    }
+
+    /// A pair whose two ends appear to hbbs to come from these addresses.
+    async fn connect_from(ws_port: i32, pk: &str, a_ip: &str, b_ip: &str) -> Self {
+        let id = format!("route-{b_ip}");
+        let mut b = connect(ws_port, Some(b_ip)).await;
+        register_pk(&mut b, &id).await;
+        let a = connect(ws_port, Some(a_ip)).await;
         Self {
             a,
             b,
             pk: pk.to_owned(),
+            id,
         }
     }
 
@@ -138,7 +148,7 @@ impl Pair {
     async fn attempt(&mut self) -> String {
         let mut msg = RendezvousMessage::new();
         msg.set_punch_hole_request(PunchHoleRequest {
-            id: "route-b".to_owned(),
+            id: self.id.clone(),
             licence_key: self.pk.clone(),
             ..Default::default()
         });
@@ -541,4 +551,184 @@ async fn a_chosen_relay_that_stops_answering_does_not_take_connections_down() {
         "still handed {got} after the chosen relay stopped answering"
     );
     assert!(console(PORT, "use-relay").await.contains("NOT answering"));
+}
+
+const GEO_DB: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/geo-test.mmdb");
+
+/// Relay locations for the fixture database: 10.40/16 is Hong Kong, 10.41/16 London,
+/// 10.42/16 New York. `near` names the relay at each place.
+fn write_locations(path: &std::path::Path, hk: &str, london: &str, ny: &str) {
+    write_routes(
+        path,
+        &format!("{hk} 22.3,114.2\n{london} 51.5,-0.1\n{ny} 40.7,-74.0\n"),
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_address_in_no_table_is_sent_to_the_relay_nearest_where_it_is_located() {
+    const PORT: i32 = 20306;
+    let (r1, r2, r3) = (
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+    );
+    let dir = std::env::temp_dir().join(format!("geo-basic-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    write_locations(&locations, &r1.addr, &r2.addr, &r3.addr);
+    let hbbs = start_hbbs(
+        PORT,
+        "geo-basic",
+        // Listed in an order that is not the geographic one, so that "first in the
+        // list" and "round-robin" both give a different answer from the right one.
+        &[&r3.addr, &r2.addr, &r1.addr],
+        &[
+            ("RELAY_PIN_TTL", "0"),
+            ("GEO_DB", GEO_DB),
+            ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ],
+    );
+    wait_for_port(PORT + 2).await;
+
+    for (net, want, place) in [
+        ("10.40.0", &r1.addr, "Hong Kong"),
+        ("10.41.0", &r2.addr, "London"),
+        ("10.42.0", &r3.addr, "New York"),
+    ] {
+        let mut pair =
+            Pair::connect_from(PORT + 2, &hbbs.pk, &format!("{net}.1"), &format!("{net}.2")).await;
+        // Several attempts, so that round-robin could not match by luck.
+        for n in 1..=4 {
+            assert_eq!(
+                pair.attempt().await,
+                *want,
+                "attempt {n} for two devices in {place}"
+            );
+        }
+    }
+
+    let said = console(PORT, "test-relay 10.41.0.1 10.41.0.2").await;
+    assert!(
+        said.contains("(geo)") && said.contains("located 10.41.0.1: 51.50,-0.10"),
+        "the dry run did not explain the location: {said}"
+    );
+    // An address the database does not know, with no table: the ordinary policy.
+    let said = console(PORT, "test-relay 8.8.8.8 1.1.1.1").await;
+    assert!(said.contains("round-robin"), "{said}");
+    let said = console(PORT, "relay-routes").await;
+    assert!(
+        said.contains("geo database") && said.contains("(loaded)") && said.contains("3 relays"),
+        "{said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_routing_line_beats_the_location_for_its_own_end_and_the_two_ends_combine() {
+    const PORT: i32 = 20316;
+    let (r1, r2, r3) = (
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+    );
+    let dir = std::env::temp_dir().join(format!("geo-mixed-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    write_locations(&locations, &r1.addr, &r2.addr, &r3.addr);
+    // The A end, which the database places in Hong Kong, has a line of its own that
+    // says London is its best relay.
+    let routes = dir.join("routes.txt");
+    write_routes(
+        &routes,
+        &format!(
+            "10.40.0.0/24 {}=300,{}=10,{}=300\n",
+            r1.addr, r2.addr, r3.addr
+        ),
+    );
+    let env = [
+        ("RELAY_PIN_TTL", "0"),
+        ("GEO_DB", GEO_DB),
+        ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ("RELAY_ROUTES", routes.to_str().unwrap()),
+    ];
+    let hbbs = start_hbbs(PORT, "geo-mixed", &[&r1.addr, &r2.addr, &r3.addr], &env);
+    wait_for_port(PORT + 2).await;
+
+    // A: 10.40.0.1 (table), B: 10.42.0.1 (New York by location).
+    // Table + location: r1 = 300+259, r2 = 10+111, r3 = 300+0, so London.
+    // Location alone would say Hong Kong (r1 = 0+259) tied with New York (259) and
+    // take the first listed, which is r1; so London shows the line was used.
+    let said = console(PORT, "test-relay 10.40.0.1 10.42.0.1").await;
+    assert!(
+        said.contains(&format!("relay: {} (routes+geo)", r2.addr)),
+        "{said}"
+    );
+    let mut pair = Pair::connect_from(PORT + 2, &hbbs.pk, "10.40.0.1", "10.42.0.1").await;
+    for n in 1..=3 {
+        assert_eq!(pair.attempt().await, r2.addr, "attempt {n}");
+    }
+    // The line covers only 10.40.0.0/24: another Hong Kong address has no line, so
+    // it is placed by location and goes to the Hong Kong relay.
+    let mut other = Pair::connect_from(PORT + 2, &hbbs.pk, "10.40.9.1", "10.40.9.2").await;
+    assert_eq!(other.attempt().await, r1.addr);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn edited_locations_apply_without_a_restart_and_a_broken_file_changes_nothing() {
+    const PORT: i32 = 20326;
+    let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
+    let dir = std::env::temp_dir().join(format!("geo-edit-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    // r1 is in Hong Kong and r2 in London; only these two relays are in use.
+    write_routes(
+        &locations,
+        &format!("{} 22.3,114.2\n{} 51.5,-0.1\n", r1.addr, r2.addr),
+    );
+    let hbbs = start_hbbs(
+        PORT,
+        "geo-edit",
+        &[&r1.addr, &r2.addr],
+        &[
+            ("RELAY_PIN_TTL", "0"),
+            ("GEO_DB", GEO_DB),
+            ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ],
+    );
+    wait_for_port(PORT + 2).await;
+    let mut pair = Pair::connect_from(PORT + 2, &hbbs.pk, "10.40.0.1", "10.40.0.2").await;
+    assert_eq!(
+        pair.attempt().await,
+        r1.addr,
+        "Hong Kong devices, Hong Kong relay"
+    );
+
+    // The relays move: now r2 is the Hong Kong one.
+    write_routes(
+        &locations,
+        &format!("{} 51.5,-0.1\n{} 22.3,114.2\n", r1.addr, r2.addr),
+    );
+    settle_on(
+        &mut pair,
+        &r2.addr,
+        Duration::from_secs(15),
+        "the edited locations",
+    )
+    .await;
+
+    // A file that is not a list of locations is reported and ignored.
+    write_routes(&locations, "this is not a list of locations\n");
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert_eq!(
+        pair.attempt().await,
+        r2.addr,
+        "a broken file changed the answer"
+    );
+    let log = hbbs.log();
+    assert!(
+        log.contains("relay locations") && log.contains("line 1"),
+        "the broken file was not reported with its line number:\n{log}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

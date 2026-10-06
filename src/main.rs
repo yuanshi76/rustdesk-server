@@ -27,6 +27,8 @@ fn main() -> ResultType<()> {
         , --must-login=[Y|N] 'Only allow a client that presents a login token (env: MUST_LOGIN)'
         , --ws-idle-timeout=[SECONDS(default=90)] 'Close a websocket that has sent nothing for this long (env: WS_IDLE_TIMEOUT)'
         , --relay-routes=[FILE] 'Routing table choosing the relay nearest to each client network (env: RELAY_ROUTES)'
+        , --geo-db=[FILE] 'GeoIP database (MMDB, City layout) used to find the relay nearest a client the routing table has no line for (env: GEO_DB)'
+        , --relay-locations=[FILE] 'Where each relay is, one `host:port latitude,longitude` per line, used with --geo-db (env: RELAY_LOCATIONS)'
         , --relay-pin-ttl=[SECONDS(default=30)] 'Hold one connection attempt's relay this long, 0 to disable (env: RELAY_PIN_TTL)'",
     );
     init_args(&args, "hbbs", "RustDesk ID/Rendezvous Server");
