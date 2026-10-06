@@ -422,3 +422,123 @@ async fn healthy_relays_stay_in_the_order_they_were_configured() {
         );
     }
 }
+
+/// One console command to hbbs, which answers loopback only, on ID port - 1.
+async fn console(port: i32, cmd: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::TcpStream::connect(("127.0.0.1", (port - 1) as u16))
+        .await
+        .expect("console");
+    s.write_all(cmd.as_bytes()).await.unwrap();
+    let mut out = String::new();
+    let _ = tokio::time::timeout(Duration::from_secs(3), s.read_to_string(&mut out)).await;
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn use_relay_sends_every_session_to_one_relay_and_survives_a_restart() {
+    const PORT: i32 = 20276;
+    const PORT2: i32 = 20286;
+    let (r1, r2, r3) = (
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+    );
+    let dir = std::env::temp_dir().join(format!("prefer-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("relay_preferred");
+    let env = [
+        ("RELAY_PIN_TTL", "0"), // every attempt is a fresh choice
+        ("RELAY_PREFERRED_FILE", file.to_str().unwrap()),
+    ];
+    let addrs = [r1.addr.as_str(), r2.addr.as_str(), r3.addr.as_str()];
+
+    let hbbs = start_hbbs(PORT, "prefer-1", &addrs, &env);
+    wait_for_port(PORT + 2).await;
+    let mut pair = Pair::connect(PORT + 2, &hbbs.pk).await;
+
+    // Control: with nothing chosen, round-robin spreads attempts over the relays.
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..6 {
+        seen.insert(pair.attempt().await);
+    }
+    assert!(seen.len() > 1, "round-robin never changed relay: {seen:?}");
+    assert!(console(PORT, "use-relay").await.contains("none"));
+
+    // Choose r3: every attempt from now on goes there, however many.
+    let said = console(PORT, &format!("use-relay {}", r3.addr)).await;
+    assert!(said.contains(&r3.addr), "{said}");
+    for n in 1..=6 {
+        assert_eq!(pair.attempt().await, r3.addr, "attempt {n} after use-relay");
+    }
+    let dry = console(PORT, "test-relay 10.40.0.1 10.40.0.2").await;
+    assert!(
+        dry.contains(&r3.addr) && dry.contains("preferred"),
+        "dry run did not report the choice: {dry}"
+    );
+
+    // A relay that is not in the list is refused, and nothing changes.
+    let said = console(PORT, "use-relay 127.0.0.1:1").await;
+    assert!(said.contains("nothing changed"), "{said}");
+    assert_eq!(pair.attempt().await, r3.addr);
+    assert_eq!(std::fs::read_to_string(&file).unwrap().trim(), r3.addr);
+    drop(pair);
+    drop(hbbs);
+
+    // A new hbbs process, same file: still r3, without being told again.
+    let hbbs = start_hbbs(PORT2, "prefer-2", &addrs, &env);
+    wait_for_port(PORT2 + 2).await;
+    let mut pair = Pair::connect(PORT2 + 2, &hbbs.pk).await;
+    for n in 1..=4 {
+        assert_eq!(pair.attempt().await, r3.addr, "attempt {n} after a restart");
+    }
+
+    // `auto` goes back to spreading, and the file is gone so a restart stays automatic.
+    let said = console(PORT2, "use-relay auto").await;
+    assert!(said.contains("automatically"), "{said}");
+    assert!(!file.exists(), "auto left the file behind");
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..6 {
+        seen.insert(pair.attempt().await);
+    }
+    assert!(seen.len() > 1, "auto did not resume round-robin: {seen:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chosen_relay_that_stops_answering_does_not_take_connections_down() {
+    const PORT: i32 = 20296;
+    let (mut r1, r2, r3) = (
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+    );
+    let hbbs = start_hbbs(
+        PORT,
+        "prefer-down",
+        &[&r1.addr, &r2.addr, &r3.addr],
+        &[("RELAY_PIN_TTL", "0")],
+    );
+    wait_for_port(PORT + 2).await;
+    let mut pair = Pair::connect(PORT + 2, &hbbs.pk).await;
+
+    console(PORT, &format!("use-relay {}", r1.addr)).await;
+    assert_eq!(pair.attempt().await, r1.addr);
+
+    // r1 dies. After the next health check (every 3 s) sessions must still be
+    // placed, on a relay that answers, and the console must say what is happening.
+    r1.stop();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let got = loop {
+        let got = pair.attempt().await;
+        if got != r1.addr || Instant::now() > deadline {
+            break got;
+        }
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+    };
+    assert!(
+        got == r2.addr || got == r3.addr,
+        "still handed {got} after the chosen relay stopped answering"
+    );
+    assert!(console(PORT, "use-relay").await.contains("NOT answering"));
+}

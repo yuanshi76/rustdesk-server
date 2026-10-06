@@ -1,7 +1,7 @@
 use crate::common::*;
 use crate::jwt;
 use crate::peer::*;
-use crate::relay_routes::RouteTable;
+use crate::relay_routes::{normalize, RouteTable};
 use hbb_common::{
     allow_err, bail,
     bytes::{Bytes, BytesMut},
@@ -137,6 +137,14 @@ struct RouteState {
     error: Option<String>,
 }
 
+/// The relay the operator has chosen for every new session, if any, and the file
+/// that remembers it across a restart.
+#[derive(Default)]
+struct PreferredRelay {
+    relay: Option<String>,
+    path: PathBuf,
+}
+
 /// A decision, with enough to explain it.
 struct RelayPick {
     relay: String,
@@ -232,6 +240,7 @@ pub struct RendezvousServer {
     ws_peers: WsPeers,
     relay_routes: Arc<StdMutex<RouteState>>,
     relay_pins: Arc<StdMutex<HashMap<PinKey, RelayPin>>>,
+    relay_preferred: Arc<StdMutex<PreferredRelay>>,
 }
 
 enum LoopFailure {
@@ -297,6 +306,7 @@ impl RendezvousServer {
             ws_peers: Arc::new(StdMutex::new(HashMap::new())),
             relay_routes: Default::default(),
             relay_pins: Default::default(),
+            relay_preferred: Default::default(),
         };
         log::info!("mask: {:?}", rs.inner.mask);
         log::info!("local-ip: {:?}", rs.inner.local_ip);
@@ -307,6 +317,7 @@ impl RendezvousServer {
             .unwrap_or(RELAY_PIN_TTL_DEFAULT_SEC);
         RELAY_PIN_TTL_MS.store(pin_ttl * 1000, Ordering::SeqCst);
         log::info!("RELAY_PIN_TTL={}s", pin_ttl);
+        rs.load_preferred_relay();
         let routes_path = get_arg("relay-routes");
         if !routes_path.is_empty() {
             log::info!("RELAY_ROUTES={}", routes_path);
@@ -1031,7 +1042,7 @@ impl RendezvousServer {
                 });
                 return Ok((msg_out, None));
             }
-            
+
             // record punch hole request (from addr -> peer id/peer_addr)
             {
                 let from_ip = try_into_v4(addr).ip().to_string();
@@ -1341,6 +1352,30 @@ impl RendezvousServer {
             }
             _ => {}
         }
+        let preferred = self
+            .relay_preferred
+            .lock()
+            .ok()
+            .and_then(|p| p.relay.clone());
+        if let Some(want) = preferred {
+            let want_n = normalize(&want);
+            if let Some(relay) = live.iter().find(|r| normalize(r) == want_n) {
+                if commit {
+                    log::info!("relay for {} <-> {}: {} (preferred)", pa, pb, relay);
+                }
+                return RelayPick {
+                    relay: relay.clone(),
+                    reason: "preferred",
+                    costs: Vec::new(),
+                };
+            }
+            // A chosen relay that has stopped answering must not take every
+            // connection down with it: choose among the others, as if none were chosen.
+            if commit {
+                log::warn!("preferred relay {want} is not answering; choosing among the others");
+            }
+        }
+
         let (a, b) = (pa.to_canonical(), pb.to_canonical());
         let key = if a <= b { (a, b) } else { (b, a) };
 
@@ -1433,6 +1468,97 @@ impl RendezvousServer {
         );
     }
 
+    /// Read the remembered choice, if there is one. Not validated against the relay
+    /// list: a relay that is not answering yet is handled when a session is placed.
+    fn load_preferred_relay(&self) {
+        let path = PathBuf::from(get_arg_or(
+            "relay-preferred-file",
+            "relay_preferred".to_owned(),
+        ));
+        let relay = std::fs::read_to_string(&path).ok().and_then(|t| {
+            t.lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(str::to_owned)
+        });
+        if let Some(r) = &relay {
+            log::info!("preferred relay: {} (from {})", r, path.display());
+        }
+        if let Ok(mut p) = self.relay_preferred.lock() {
+            p.relay = relay;
+            p.path = path;
+        }
+    }
+
+    /// `use-relay`: show, set or clear the preferred relay.
+    fn use_relay_command(&self, arg: Option<&str>) -> String {
+        let mut res = String::new();
+        let live = self.live_relays();
+        let Ok(mut pref) = self.relay_preferred.lock() else {
+            return "internal error\n".to_owned();
+        };
+        match arg {
+            None => match &pref.relay {
+                None => res.push_str("none: relays are chosen automatically\n"),
+                Some(r) => {
+                    let up = live.iter().any(|l| normalize(l) == normalize(r));
+                    res.push_str(&format!(
+                        "{r} ({})\n",
+                        if up {
+                            "answering, in use for every new session"
+                        } else {
+                            "NOT answering, the other relays are being used"
+                        }
+                    ));
+                }
+            },
+            Some("auto") => {
+                pref.relay = None;
+                let removed = match std::fs::remove_file(&pref.path) {
+                    Ok(()) => true,
+                    Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+                };
+                res.push_str("relays are chosen automatically again\n");
+                if !removed {
+                    res.push_str(&format!(
+                        "warning: could not delete {}, the choice will come back after a restart\n",
+                        pref.path.display()
+                    ));
+                }
+                log::info!("preferred relay cleared");
+            }
+            Some(want) => {
+                let want_n = normalize(want);
+                match live.iter().find(|r| normalize(r) == want_n) {
+                    None => {
+                        res.push_str(&format!("{want} is not one of the answering relays:\n"));
+                        for r in live.iter() {
+                            res.push_str(&format!("  {r}\n"));
+                        }
+                        res.push_str("nothing changed\n");
+                    }
+                    Some(relay) => {
+                        pref.relay = Some(relay.clone());
+                        res.push_str(&format!("every new session now uses {relay}\n"));
+                        if let Err(e) = std::fs::write(&pref.path, format!("{relay}\n")) {
+                            res.push_str(&format!(
+                                "warning: could not save to {}: {e}; the choice is lost on restart\n",
+                                pref.path.display()
+                            ));
+                        }
+                        log::info!("preferred relay set to {relay}");
+                    }
+                }
+            }
+        }
+        drop(pref);
+        // Held choices were made before this one.
+        if let Ok(mut pins) = self.relay_pins.lock() {
+            pins.clear();
+        }
+        res
+    }
+
     /// Re-read the routing file if it changed. Called every few seconds. A file
     /// that cannot be read or parsed is reported once per change and the previous
     /// table, or round-robin if there was none, stays in force.
@@ -1492,7 +1618,7 @@ impl RendezvousServer {
         match fds.next() {
             Some("h") => {
                 res = format!(
-                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+                    "{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
                     "relay-servers(rs) <separated by ,>",
                     "reload-geo(rg)",
                     "ip-blocker(ib) [<ip>|<number>] [-]",
@@ -1503,7 +1629,8 @@ impl RendezvousServer {
                     "must-login(ml) [Y|N]",
                     "ws-peers(wp)",
                     "test-relay(tr) <ip1> [<ip2>]",
-                    "relay-routes(rr)"
+                    "relay-routes(rr)",
+                    "use-relay(ur) [<host:port>|auto]"
                 )
             }
             Some("relay-servers" | "rs") => {
@@ -1660,6 +1787,9 @@ impl RendezvousServer {
                         let _ = writeln!(res, "usage: test-relay <ip1> [<ip2>]");
                     }
                 }
+            }
+            Some("use-relay" | "ur") => {
+                res = self.use_relay_command(fds.next());
             }
             Some("relay-routes" | "rr") => {
                 if let Ok(st) = self.relay_routes.lock() {

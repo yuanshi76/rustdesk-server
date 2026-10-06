@@ -740,3 +740,25 @@ Full account in `docs/api-server.md`. What matters:
 | Phase 7 matrix, `--deploy` check, Phase 10 | Need real 1.4.x and 1.5.0 clients. |
 | Phase 9 campaign | Tool ready. Needs the real node list and the sites to run from. Everything in Phase 8 waits on it, per the plan's own decision rule: if the best node is within ~20% of the second best for every pair that matters, relay selection is not worth building. |
 | Phase 8 | **Built as a hand-made routing table** with per-attempt pinning (above). Not done: live measurement, geographic data. Not exercised: a real multi-relay deployment, which needs a second relay server. |
+
+
+### `use-relay`: one chosen relay for every session (2026-10-06)
+
+Asked for by the user after dropping the latency campaign: they run several relays
+and were editing the Relay server field on both the initiating and the controlled
+machine to switch. Read from the client's `master` source, not run: the controlled
+side uses its own `relay-server` option if set, else the one `hbbs` sends
+(`rendezvous_mediator.rs`, `get_relay_server`); the controlling side takes the relay
+from the server's `PunchHoleResponse`/`RelayResponse` and does not read its own option
+in `client.rs`. So only the machines connected *to* need the field emptied.
+
+Built: console `use-relay [HOST:PORT|auto]` (`ur`), checked before pins, the routing
+table and round-robin in `pick_relay`; saved to `relay_preferred` next to the database
+(`RELAY_PREFERRED_FILE` overrides). A chosen relay that is not in the answering list
+is refused; one that stops answering is skipped (logged, shown by `use-relay`), not
+fatal. Three mutations caught by `tests/relay_routing.rs` (preference ignored; not
+loaded at startup; no liveness check). Not yet tried against a real client or on
+separate machines. Guide: `docs/switching-relays.md`.
+
+`cargo fmt` run over the tree also reformats `libs/hbb_common` and two unrelated
+files; revert those, format only what you changed.
