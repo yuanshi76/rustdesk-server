@@ -243,6 +243,80 @@ mod tests {
         assert!(across == "lon.example.com:21117" || across == "ny.example.com:21117");
     }
 
+    /// Run by hand against a real database:
+    ///
+    ///     GEO_REAL_DB=/path/to/dbip-city-lite.mmdb cargo test --lib real_database -- --ignored --nocapture
+    ///
+    /// Well-known public addresses with a known city, checked to within 600 km.
+    #[test]
+    #[ignore]
+    fn real_database_places_well_known_addresses_sensibly() {
+        let Ok(path) = std::env::var("GEO_REAL_DB") else {
+            panic!("set GEO_REAL_DB to a City-layout MMDB file");
+        };
+        let db = GeoDb::open(Path::new(&path)).unwrap();
+        // (address, what it is, a point in that city)
+        let cases: [(&str, &str, Point); 4] = [
+            (
+                "8.8.8.8",
+                "Google DNS, US west",
+                Point {
+                    lat: 37.4,
+                    lon: -122.1,
+                },
+            ),
+            (
+                "9.9.9.9",
+                "Quad9",
+                Point {
+                    lat: 37.8,
+                    lon: -122.4,
+                },
+            ),
+            (
+                "180.76.76.76",
+                "Baidu DNS, Beijing",
+                Point {
+                    lat: 39.9,
+                    lon: 116.4,
+                },
+            ),
+            (
+                "223.5.5.5",
+                "Alibaba DNS, Hangzhou",
+                Point {
+                    lat: 30.3,
+                    lon: 120.2,
+                },
+            ),
+        ];
+        let mut bad = Vec::new();
+        for (ip, what, want) in cases {
+            let got = db.locate(ip.parse().unwrap());
+            println!("{ip:24} {what:28} -> {got:?}");
+            match got {
+                Some(p) if distance_km(p, want) < 600.0 => {}
+                other => bad.push(format!("{ip} ({what}): {other:?}")),
+            }
+        }
+        // IPv6 is placed too. The city is not checked: these are anycast addresses,
+        // served from many places, so a database can only guess.
+        let v6 = db.locate("2001:4860:4860::8888".parse().unwrap());
+        println!("{:24} IPv6 anycast -> {v6:?}", "2001:4860:4860::8888");
+        if v6.is_none() {
+            bad.push("an IPv6 address was not placed at all".to_owned());
+        }
+        // Private and reserved addresses must not be placed.
+        for ip in ["10.0.0.1", "192.168.1.1", "127.0.0.1"] {
+            let got = db.locate(ip.parse().unwrap());
+            println!("{ip:24} private -> {got:?}");
+            if got.is_some() {
+                bad.push(format!("{ip} should not be placed, got {got:?}"));
+            }
+        }
+        assert!(bad.is_empty(), "implausible: {bad:#?}");
+    }
+
     #[test]
     fn bad_locations_are_refused_with_the_line_number() {
         for (text, needle) in [

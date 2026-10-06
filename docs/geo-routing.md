@@ -126,7 +126,13 @@ database has the wrong idea about that address, and nothing here can fix it.
 
 ## Status
 
-Tested with a small test database in the same layout as DB-IP's, on one machine with
-stand-in relays. Not yet run against the real DB-IP file, a real client, or separate
-relay servers; if the first `test-relay` above shows a place that makes no sense, say
-so.
+Tested with a small test database, and also by hand with the real DB-IP file
+(`dbip-city-lite-2026-10`, 127 MB unpacked) and a real `hbbs` with three stand-in relays
+on one machine. Well-known addresses were placed in the right city (Google DNS in
+California, Baidu DNS in Beijing, Alibaba DNS in Hangzhou), a Beijing and Hangzhou pair
+went to the Hong Kong relay and a California pair to the San Jose one, private
+addresses were not placed, and the whole `hbbs` process used about 24 MB with the
+database loaded. Anycast addresses (the same address served from many cities, such as
+Google's IPv6 DNS) are placed arbitrarily, as for any database. Not yet run with a real
+client or separate relay servers. If the first `test-relay` above shows a place that
+makes no sense for one of your own addresses, say so.

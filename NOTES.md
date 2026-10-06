@@ -785,10 +785,16 @@ networks) and three real-`hbbs` tests; four mutations (geo unused, locations nev
 reloaded, latitude and longitude swapped, table ignored where geo knows the address)
 each fail at least one.
 
-NOT verified: the real DB-IP file. The reader asks for `location.latitude` and
-`location.longitude`, which is the layout DB-IP documents (it says its MMDB works with
-MaxMind readers) but this was tested only against the fixture. First thing to do with a
-real file: `test-relay <a known public address>` and read where it was placed.
+Verified against the real file (`dbip-city-lite-2026-10.mmdb`, 60 MB gz / 127 MB
+unpacked) on 2026-10-06: `location.latitude`/`longitude` are there; 8.8.8.8 ->
+37.42,-122.08, 180.76.76.76 -> Beijing, 223.5.5.5 -> Hangzhou; private ranges are not
+placed; Google's anycast IPv6 DNS is placed in Montreal (arbitrary, as for any
+database; my first expectation of California was the mistake). Full `hbbs` with the
+real file and three stand-in relays: Beijing+Hangzhou -> the Hong Kong relay, California
+pair -> San Jose, private pair -> round-robin, RSS 24 MB with the file mapped. The
+check is kept as an ignored test: `GEO_REAL_DB=<file> cargo test --lib real_database
+-- --ignored --nocapture`. Still not run: a real client, separate relay machines, a
+phone network.
 
 Lockfile trap: `cargo add` re-resolved the lock and merged `signature 1.5.0` into
 `2.2.0`, which does not compile (`ed25519 1.5.0` needs the old trait). The lock was
