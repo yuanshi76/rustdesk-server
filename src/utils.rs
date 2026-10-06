@@ -4,6 +4,7 @@ use sodiumoxide::crypto::sign;
 use std::{
     env,
     net::{IpAddr, TcpStream},
+    path::PathBuf,
     process, str,
 };
 
@@ -14,7 +15,10 @@ fn print_help() {
 Available Commands:
     genkeypair                                   Generate a new keypair
     validatekeypair [public key] [secret key]    Validate an existing keypair
-    doctor [rustdesk-server]                     Check for server connection problems"
+    doctor [rustdesk-server]                     Check for server connection problems
+    geo-update [--out FILE] [--loop] [--force] [--base-url URL]
+                                                 Download DB-IP's monthly GeoIP database for
+                                                 hbbs (GEO_DB), and keep it current with --loop"
     );
     process::exit(0x0001);
 }
@@ -139,6 +143,84 @@ fn doctor(server_address_unclean: &str) {
     }
 }
 
+/// `geo-update`: fetch the GeoIP database once, or with `--loop` every day (it only
+/// downloads when a new month's file is published, about once a month).
+fn geo_update(args: &[String]) {
+    use hbbs::geo_update::{update, Options, Outcome, DEFAULT_BASE_URL};
+    use std::{thread::sleep, time::Duration};
+
+    let (mut out, mut base, mut force, mut looping) = (
+        env::var("GEO_DB").ok().filter(|v| !v.is_empty()),
+        env::var("GEO_UPDATE_BASE_URL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| DEFAULT_BASE_URL.to_owned()),
+        false,
+        false,
+    );
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--out" => out = it.next().cloned(),
+            "--base-url" => base = it.next().cloned().unwrap_or(base),
+            "--force" => force = true,
+            "--loop" => looping = true,
+            other => error_then_help(&format!("unknown option {other}")),
+        }
+    }
+    let out = PathBuf::from(out.unwrap_or_else(|| "geo.mmdb".to_owned()));
+    let log = |msg: String| {
+        println!(
+            "[{}] geo-update: {msg}",
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+    };
+    loop {
+        let now = {
+            use chrono::Datelike;
+            let d = chrono::Utc::now();
+            (d.year(), d.month())
+        };
+        let mut o = Options::new(out.clone(), base.clone(), now);
+        o.force = force;
+        // A forced refresh is a one-off, not something to repeat every day.
+        force = false;
+        let failed = match update(&o) {
+            Ok(Outcome::Updated(m)) => {
+                log(format!(
+                    "installed the {m} database at {} (data by DB-IP.com, CC BY 4.0)",
+                    out.display()
+                ));
+                false
+            }
+            Ok(Outcome::UpToDate(m)) => {
+                if !looping {
+                    log(format!(
+                        "already have the {m} database, nothing newer is published"
+                    ));
+                }
+                false
+            }
+            Err(e) => {
+                log(format!("failed, keeping the current file: {e}"));
+                if !looping {
+                    process::exit(0x0001);
+                }
+                true
+            }
+        };
+        if !looping {
+            return;
+        }
+        // A day between checks; after a failure, six hours.
+        sleep(Duration::from_secs(if failed {
+            6 * 3600
+        } else {
+            24 * 3600
+        }));
+    }
+}
+
 fn main() {
     let args: Vec<_> = env::args().collect();
     if args.len() <= 1 {
@@ -159,6 +241,7 @@ fn main() {
             }
             println!("Key pair is VALID");
         }
+        "geo-update" => geo_update(&args[2..]),
         "doctor" => {
             if args.len() <= 2 {
                 error_then_help("You must supply the rustdesk-server address");

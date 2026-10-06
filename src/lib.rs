@@ -4,6 +4,7 @@ pub mod common;
 mod database;
 pub mod jwt;
 mod peer;
+pub mod geo_update;
 mod relay_geo;
 mod relay_routes;
 mod version;

@@ -134,6 +134,29 @@ impl GeoDb {
         })
     }
 
+    /// Is this file a usable City database? Used on a download before it replaces the
+    /// current one: it must open, say it is a City database, and have at least
+    /// `min_nodes` nodes in its search tree (a handful would mean it is empty or a toy).
+    pub fn validate_city(path: &Path, min_nodes: u32) -> Result<(), String> {
+        // SAFETY: as in `open`; the file is not modified while it is mapped.
+        let reader = unsafe { maxminddb::Reader::open_mmap(path) }
+            .map_err(|e| format!("not a GeoIP database: {e}"))?;
+        let m = reader.metadata();
+        if !m.database_type.contains("City") {
+            return Err(format!(
+                "database type is {:?}, not a City database",
+                m.database_type
+            ));
+        }
+        if m.node_count < min_nodes {
+            return Err(format!(
+                "only {} nodes, fewer than the {min_nodes} a real City database has",
+                m.node_count
+            ));
+        }
+        Ok(())
+    }
+
     /// An address the database has no position for, such as a private one, is `None`.
     pub fn locate(&self, ip: IpAddr) -> Option<Point> {
         (self.locate)(ip.to_canonical())

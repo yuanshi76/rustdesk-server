@@ -113,3 +113,70 @@ pub async fn register_pk(ws: &mut Ws, id: &str) {
         other => panic!("expected RegisterPkResponse, got {other:?}"),
     }
 }
+
+/// A tiny HTTP server for tests of things that download: serves fixed bodies by path
+/// on 127.0.0.1, answers 404 for anything else, and records every path requested.
+pub struct FileServer {
+    pub base: String,
+    files: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, (u16, Vec<u8>)>>>,
+    pub requests: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl FileServer {
+    pub fn start() -> Self {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let files: std::sync::Arc<
+            std::sync::Mutex<std::collections::HashMap<String, (u16, Vec<u8>)>>,
+        > = Default::default();
+        let requests: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let (f, r) = (files.clone(), requests.clone());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let (f, r) = (f.clone(), r.clone());
+                std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    let n = s.read(&mut buf).unwrap_or(0);
+                    let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let path = head
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .unwrap_or("/")
+                        .to_owned();
+                    r.lock().unwrap().push(path.clone());
+                    let (status, body) = f
+                        .lock()
+                        .unwrap()
+                        .get(&path)
+                        .cloned()
+                        .unwrap_or((404, b"not found".to_vec()));
+                    let _ = write!(
+                        s,
+                        "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = s.write_all(&body);
+                });
+            }
+        });
+        Self {
+            base,
+            files,
+            requests,
+        }
+    }
+
+    pub fn serve(&self, path: &str, status: u16, body: Vec<u8>) {
+        self.files
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), (status, body));
+    }
+
+    pub fn request_count(&self) -> usize {
+        self.requests.lock().unwrap().len()
+    }
+}

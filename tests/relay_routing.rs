@@ -732,3 +732,141 @@ async fn edited_locations_apply_without_a_restart_and_a_broken_file_changes_noth
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_monthly_database_update_changes_where_devices_are_sent_without_a_restart() {
+    const PORT: i32 = 20336;
+    let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
+    let dir = std::env::temp_dir().join(format!("geo-monthly-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    // r1 is in Hong Kong, r2 in London.
+    write_routes(
+        &locations,
+        &format!("{} 22.3,114.2\n{} 51.5,-0.1\n", r1.addr, r2.addr),
+    );
+    // The installed database says 10.40/16 is Hong Kong.
+    let db = dir.join("geo.mmdb");
+    std::fs::copy(GEO_DB, &db).unwrap();
+    let hbbs = start_hbbs(
+        PORT,
+        "geo-monthly",
+        &[&r1.addr, &r2.addr],
+        &[
+            ("RELAY_PIN_TTL", "0"),
+            ("GEO_DB", db.to_str().unwrap()),
+            ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ],
+    );
+    wait_for_port(PORT + 2).await;
+    let mut pair = Pair::connect_from(PORT + 2, &hbbs.pk, "10.40.0.1", "10.40.0.2").await;
+    assert_eq!(pair.attempt().await, r1.addr, "before the update");
+
+    // The next month's file, served as DB-IP serves it, says the range is in London.
+    let server = support::FileServer::start();
+    let swapped = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/geo-test-swapped.mmdb"
+    ))
+    .unwrap();
+    let gz = {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(&swapped).unwrap();
+        e.finish().unwrap()
+    };
+    server.serve("/dbip-city-lite-2026-10.mmdb.gz", 200, gz);
+    let (out, base) = (db.clone(), server.base.clone());
+    let outcome = tokio::task::spawn_blocking(move || {
+        let mut o = hbbs::geo_update::Options::new(out, base, (2026, 10));
+        o.min_nodes = 1;
+        hbbs::geo_update::update(&o)
+    })
+    .await
+    .unwrap();
+    assert!(outcome.is_ok(), "{outcome:?}");
+
+    // hbbs picks the new file up on its own and the same devices now go to London.
+    settle_on(
+        &mut pair,
+        &r2.addr,
+        Duration::from_secs(15),
+        "the updated database",
+    )
+    .await;
+    assert!(
+        hbbs.log().contains("geo database: loaded"),
+        "the reload was not logged:\n{}",
+        hbbs.log()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_download_is_picked_up_by_an_hbbs_that_started_without_a_database() {
+    const PORT: i32 = 20346;
+    // A fresh container with automatic updates: hbbs starts first and the file does
+    // not exist yet. It must say so, keep working, and notice the file when it appears.
+    let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
+    let dir = std::env::temp_dir().join(format!("geo-first-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    write_routes(
+        &locations,
+        &format!("{} 22.3,114.2\n{} 51.5,-0.1\n", r1.addr, r2.addr),
+    );
+    let db = dir.join("geo.mmdb");
+    let hbbs = start_hbbs(
+        PORT,
+        "geo-first",
+        &[&r1.addr, &r2.addr],
+        &[
+            ("RELAY_PIN_TTL", "0"),
+            ("GEO_DB", db.to_str().unwrap()),
+            ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ],
+    );
+    wait_for_port(PORT + 2).await;
+    let said = console(PORT, "relay-routes").await;
+    assert!(said.contains("NOT loaded"), "{said}");
+    // Sessions still work, by taking relays in turn.
+    let mut pair = Pair::connect_from(PORT + 2, &hbbs.pk, "10.40.0.1", "10.40.0.2").await;
+    let got = pair.attempt().await;
+    assert!(got == r1.addr || got == r2.addr);
+
+    let server = support::FileServer::start();
+    let gz = {
+        use std::io::Write;
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        e.write_all(&std::fs::read(GEO_DB).unwrap()).unwrap();
+        e.finish().unwrap()
+    };
+    server.serve("/dbip-city-lite-2026-10.mmdb.gz", 200, gz);
+    let (out, base) = (db.clone(), server.base.clone());
+    tokio::task::spawn_blocking(move || {
+        let mut o = hbbs::geo_update::Options::new(out, base, (2026, 10));
+        o.min_nodes = 1;
+        hbbs::geo_update::update(&o)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let said = console(PORT, "relay-routes").await;
+        if said.contains("(loaded)") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "never loaded the new file: {said}"
+        );
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+    // Hong Kong devices, from the freshly downloaded database, go to the Hong Kong relay.
+    for n in 1..=3 {
+        assert_eq!(pair.attempt().await, r1.addr, "attempt {n}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

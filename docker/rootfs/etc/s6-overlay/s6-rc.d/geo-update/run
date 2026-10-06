@@ -1,0 +1,11 @@
+#!/command/with-contenv sh
+# Keeps the GeoIP database current. Does nothing unless GEO_AUTO_UPDATE=Y.
+#
+# With it on, this checks once a day and downloads a file only when DB-IP has
+# published a new month's (about once a month); hbbs notices the new file by itself.
+cd /data
+case "${GEO_AUTO_UPDATE}" in
+  Y) ;;
+  *) exec sleep 2147483647 ;;
+esac
+exec /usr/bin/rustdesk-utils geo-update --loop --out "${GEO_DB:-/data/geo.mmdb}"

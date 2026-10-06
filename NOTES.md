@@ -800,3 +800,39 @@ Lockfile trap: `cargo add` re-resolved the lock and merged `signature 1.5.0` int
 `2.2.0`, which does not compile (`ed25519 1.5.0` needs the old trait). The lock was
 restored and the new crates added by hand; build with `--locked`, and do not let cargo
 regenerate it.
+
+
+### Monthly geo database update (2026-10-06)
+
+`rustdesk-utils geo-update [--out F] [--loop] [--force] [--base-url U]`, in
+`src/geo_update.rs`. Newest of this month / last month's `dbip-city-lite-YYYY-MM.mmdb.gz`
+that is newer than `<db>.version` (the month on disk), streamed through gunzip into a
+temp file with size caps, checked as a City database (`GeoDb::validate_city`: opens,
+type contains "City", at least 100,000 nodes) and renamed into place. Any failure leaves
+the old file, removes the temp file, and in `--loop` retries in 6 h; a good day-to-day
+check costs no request.
+
+Why not a shell script, which is what was asked for ("embedded script"): the s6 image's
+base is `busybox:stable`, whose `wget` prints "TLS certificate validation not
+implemented" and accepted `expired.badssl.com` when tried. Downloading a file that is
+memory-mapped by hbbs without checking who sent it is not acceptable, and the classic
+image has no shell at all. A subcommand of `rustdesk-utils` (shipped in both images)
+using the reqwest/rustls already in the dependency tree checks certificates; both
+images now carry Alpine's `ca-certificates.crt` for that.
+
+Runs as the s6 service `geo-update` when `GEO_AUTO_UPDATE=Y` (otherwise it sleeps),
+default file `/data/geo.mmdb`, which `hbbs/run` also exports as `GEO_DB`. Classic image:
+a third container from the same image running the same command (documented).
+
+Tests (`tests/geo_update.rs`, local HTTP server standing in for DB-IP): previous-month
+fallback; installed month costs no request; November before it is published; year
+rollover; nothing published; 500 / captive-portal HTML / gzip of non-database / truncated
+gzip / wrong kind never damage the file or leave temp files; toy DB refused by default;
+size caps; `--force`; a hand-placed file is replaced. Four mutations (no validation,
+installed month ignored, temp never cleaned, previous month not tried) each fail
+tests. In `tests/relay_routing.rs`: an update reaches a running hbbs and changes where
+the same devices go, and an hbbs started with no database file picks it up when it
+appears.
+
+Not run: the image-level service (needs the Linux binaries; checked from the CI build)
+and a real download through the images' rustls against download.db-ip.com.

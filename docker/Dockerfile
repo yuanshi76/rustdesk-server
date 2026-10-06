@@ -8,6 +8,7 @@
 FROM --platform=$BUILDPLATFORM alpine:3.20 AS s6
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.0.0
+RUN apk add --no-cache ca-certificates
 RUN set -eux; \
     case "$TARGETARCH" in \
       amd64) s6_arch=x86_64 ;; \
@@ -26,6 +27,9 @@ FROM busybox:stable
 ARG TARGETARCH
 
 COPY --from=s6 /s6root /
+# Root certificates, so that rustdesk-utils geo-update can check who it is talking to.
+# (This base has none, and busybox wget does not check certificates at all.)
+COPY --from=s6 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN ln -s /run /var/run
 
 COPY rootfs /
@@ -41,6 +45,9 @@ ENV MUST_LOGIN=N
 # Seconds a websocket may go silent - including the Pong answering our Ping -
 # before hbbs closes it.
 ENV WS_IDLE_TIMEOUT=90
+# Y: download and keep current the GeoIP database (DB-IP "IP to City Lite", CC BY 4.0)
+# at GEO_DB, default /data/geo.mmdb. Also set RELAY_LOCATIONS for it to be used.
+ENV GEO_AUTO_UPDATE=N
 
 EXPOSE 21115 21116 21116/udp 21117 21118 21119
 

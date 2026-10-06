@@ -28,6 +28,11 @@ services:
       # matching key. 1 adds `-k _`, which starts REJECTING clients whose key
       # does not match - a behaviour change, so set it deliberately.
       - ENCRYPTED_ONLY=0
+      # Optional: choose the nearest relay by where a device is (docs/geo-routing.md).
+      # With Y the image downloads the free DB-IP location database and refreshes it
+      # monthly; also write /data/relay_locations.txt, then uncomment both lines.
+      # - GEO_AUTO_UPDATE=Y
+      # - RELAY_LOCATIONS=/data/relay_locations.txt
       - MUST_LOGIN=N
       - WS_IDLE_TIMEOUT=90
       # - RUSTDESK_API_JWT_KEY=<shared with api>   # only meaningful with MUST_LOGIN=Y

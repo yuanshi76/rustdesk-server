@@ -54,10 +54,12 @@ gunzip dbip-city-lite-2026-10.mmdb.gz
 mv dbip-city-lite-2026-10.mmdb geo.mmdb
 ```
 
-**Updating it later** (once a month is plenty): download and unpack under a different
-name, then `mv` it over `geo.mmdb`. Rename, never copy or unpack straight over the old
-file, because `hbbs` has the file open and the replacement must not change it
-underneath. `hbbs` notices the new file within a few seconds and needs no restart.
+**Updating it later:** DB-IP publishes a new file every month, and you can have that
+done for you, see [Keeping it up to date](#keeping-it-up-to-date) below. By hand:
+download and unpack under a different name, then `mv` it over `geo.mmdb`. Rename,
+never copy or unpack straight over the old file, because `hbbs` has the file open and
+the replacement must not change it underneath. `hbbs` notices the new file within a few
+seconds and needs no restart.
 
 ### 2. Where your relays are
 
@@ -90,6 +92,63 @@ edits to either file are picked up on their own.
 
 On the clients, as before, fill in only the ID server and the Key, and leave **Relay
 server** empty. A machine whose Relay server field is filled in ignores all of this.
+
+## Keeping it up to date
+
+The images carry a small updater, `rustdesk-utils geo-update`. It checks once a day
+and downloads only when DB-IP has published a new month's file (about once a month,
+so a few hundred MB a year at most). It writes the file under a temporary name, checks
+that it is a real City database, and only then renames it into place; a failed or
+damaged download is discarded and the old file keeps being used. It remembers which
+month it has in `geo.mmdb.version` beside the database. `hbbs` picks up the new file
+within a few seconds.
+
+It checks the certificate of `download.db-ip.com` (the images include root
+certificates for this).
+
+**s6 images** (`rustdesk-server-s6`, `docker-compose-s6.yml`): just turn it on. This
+also saves you from setting `GEO_DB`, which defaults to `/data/geo.mmdb`:
+
+```yaml
+environment:
+  - GEO_AUTO_UPDATE=Y
+  - RELAY_LOCATIONS=/data/relay_locations.txt
+```
+
+The first download happens when the container starts, so for the first minute `hbbs`
+logs that it has no database and takes relays in turn; then it switches over.
+
+**Classic image** (no shell, one process per container): run the updater as a third
+container from the same image, sharing the data folder:
+
+```yaml
+  rustdesk_geo_update:
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.4.0   # the same tag as hbbs
+    command: rustdesk-utils geo-update --loop --out /root/geo.mmdb
+    volumes:
+      - ./data:/root
+    restart: unless-stopped
+```
+
+and give `hbbs` `GEO_DB=/root/geo.mmdb` and `RELAY_LOCATIONS=/root/relay_locations.txt`
+as before.
+
+**One-off or from cron:** `docker exec rustdesk_server rustdesk-utils geo-update`
+(s6 image) updates now if a new month is out; add `--force` to download again even if the
+month is already installed.
+
+If a download fails, the log says why (for example no outside access, or DB-IP's
+site being down), the current file stays, and it tries again six hours later.
+
+## Which machine runs what
+
+Only the main server runs `hbbs`, so only the main server needs the database, the
+locations file, the updater and these settings. The other relay servers run **only
+`hbbr`**, from the same image (see `docker-compose-relay-node.yml`); they know nothing
+about locations, the main server, or each other. The relay code (`hbbr`) has not
+changed in this fork's routing work, so relay machines on `v0.2.0` or later keep
+working, but running the same version everywhere is simpler. The main server can
+also run an `hbbr` of its own and list it among the relays.
 
 ## Check that it works
 
