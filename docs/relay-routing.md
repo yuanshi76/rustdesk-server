@@ -117,6 +117,36 @@ it answers. (The server probes every relay once every three seconds.)
   any relay that is listed, but can still be chosen if nothing else is.
 - When two relays cost the same, the one listed first in `-r` wins.
 
+## Phones, and laptops that travel
+
+The table matches on the address `hbbs` sees, so a device whose address keeps
+changing will not match a line you wrote for one place. What happens then:
+
+- **One end listed, one not** (a travelling laptop connecting to your office machine):
+  the unlisted end is ignored and the relay nearest the listed end is used. For many
+  setups that is already the right answer.
+- **Neither end listed** (a phone connecting to a travelling laptop): relays are taken
+  in turn, which may be a far one.
+
+To cover the second case, add a catch-all line for any address not listed elsewhere,
+saying which relay you want by default. Put your preferred default relay first in the
+`hbbs` relay list as well, because ties go to the earliest:
+
+```
+0.0.0.0/0   hk.example.com:21117=0, sh.example.com:21117=20, us.example.com:21117=60
+::/0        hk.example.com:21117=0, sh.example.com:21117=20, us.example.com:21117=60
+```
+
+The first line is for IPv4 addresses and the second for IPv6 (most phone networks
+use both). A specific line always beats the catch-all where it applies. If one end
+is listed and the other is a roamer, the two add up as usual, so keep the catch-all's
+numbers small compared with your specific lines, or it will outweigh them.
+
+Phone networks do not give a device a fixed address, so the table cannot know which
+relay is nearest a phone on the move. If you need a particular device to always use a
+particular relay wherever it is, that has to key on the device's ID instead of its
+address, which is not built.
+
 ## Things to know
 
 - **`hbbs` matches on the address it sees.** Clients behind a reverse proxy are

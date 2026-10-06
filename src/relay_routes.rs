@@ -236,6 +236,39 @@ mod tests {
     }
 
     #[test]
+    fn a_catch_all_line_covers_roaming_addresses_and_loses_to_any_specific_line() {
+        // The traveller's address is in no list; `0.0.0.0/0` and `::/0` say what to
+        // do about any such address, and a specific line still wins where it applies.
+        let t = RouteTable::parse(
+            "203.0.113.0/24 hk:1=10,sh:1=50\n0.0.0.0/0 hk:1=0,sh:1=5\n::/0 hk:1=0,sh:1=5",
+        )
+        .unwrap();
+        let healthy = relays(&["sh:1", "hk:1"]);
+        let pick = |a: &str, b: &str| {
+            t.choose(&healthy, ip(a), ip(b))
+                .map(|c| (c.relay, c.cost_ms))
+        };
+        // Roamer to the office: the office's line and the catch-all add up. hk = 10, sh = 55.
+        assert_eq!(
+            pick("8.8.8.8", "203.0.113.5"),
+            Some(("hk:1".to_owned(), 10.0))
+        );
+        // Office to office uses the office line twice, not the catch-all.
+        assert_eq!(
+            pick("203.0.113.5", "203.0.113.6"),
+            Some(("hk:1".to_owned(), 20.0))
+        );
+        // Two roamers: hk = 0, sh = 10. A table without the catch-all gives no answer.
+        assert_eq!(pick("8.8.8.8", "1.1.1.1"), Some(("hk:1".to_owned(), 0.0)));
+        assert_eq!(
+            pick("2001:db8::1", "2001:db8::2"),
+            Some(("hk:1".to_owned(), 0.0))
+        );
+        let plain = RouteTable::parse("203.0.113.0/24 hk:1=10,sh:1=50").unwrap();
+        assert_eq!(plain.choose(&healthy, ip("8.8.8.8"), ip("1.1.1.1")), None);
+    }
+
+    #[test]
     fn one_known_side_is_enough_and_two_unknown_sides_defer() {
         let t = RouteTable::parse(TABLE).unwrap();
         let healthy = relays(&["hk.example.com:21117", "sh.example.com:21117"]);
