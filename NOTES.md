@@ -859,7 +859,9 @@ thing. Found and fixed:
    connection), then fixed by mapping a private copy that is unlinked at once
    (`relay_geo::open_mapped`; beside the file, else the temp folder, else the file itself
    with a warning). A half-written original is rejected and the previous DB kept.
-   Costs about the database's size in free disk while it is in use. Windows maps the file
+   Costs about the database's size in extra free disk while it is in use: the file and the
+   private copy, ~260 MB, and ~380 MB for a few seconds during an update (download temp +
+   file + old copy, then new copy). Nothing accumulates month to month. Windows maps the file
    itself (cannot unlink a mapped file).
 2. The reload copied and opened the database **while holding the lock** that session
    placement waits on. It now looks under the lock, does the work outside it (and

@@ -177,8 +177,10 @@ database has the wrong idea about that address, and nothing here can fix it.
 - **Replacing the database file by hand is safe.** `hbbs` reads a private copy, so
   overwriting `geo.mmdb` in place (a plain download or unpack onto it) cannot crash the
   server; a half-written file is rejected and the previous one stays in use. The copy
-  needs about as much free disk space as the database (about 130 MB) while it is in
-  use. Renaming a new file over the old one is still the tidy way.
+  is another 130 MB or so of disk while it is in use, so plan for roughly 260 MB in
+  steady state and up to about 380 MB for a few seconds during a monthly update. Nothing
+  accumulates: each month's file is a complete replacement, the old one is deleted, and
+  no older months are kept. Renaming a new file over the old one is still the tidy way.
 - **A relay missing from `relay_locations.txt` is reported.** The `hbbs` log and the
   `relay-routes` console command say so, because such a relay is treated as very far
   away and is almost never chosen, and a typo (a different port, or a name where the
