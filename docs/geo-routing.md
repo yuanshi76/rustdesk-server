@@ -174,6 +174,20 @@ database has the wrong idea about that address, and nothing here can fix it.
 - **A phone roaming abroad** often gets its home carrier's address, so it is placed at
   home. Likewise a device on a VPN is placed where the VPN exits, which is also where
   its traffic enters the internet.
+- **Replacing the database file by hand is safe.** `hbbs` reads a private copy, so
+  overwriting `geo.mmdb` in place (a plain download or unpack onto it) cannot crash the
+  server; a half-written file is rejected and the previous one stays in use. The copy
+  needs about as much free disk space as the database (about 130 MB) while it is in
+  use. Renaming a new file over the old one is still the tidy way.
+- **A relay missing from `relay_locations.txt` is reported.** The `hbbs` log and the
+  `relay-routes` console command say so, because such a relay is treated as very far
+  away and is almost never chosen, and a typo (a different port, or a name where the
+  relay list has an IP) is the usual cause. Entries in the locations file that are not
+  in the relay list are reported and ignored.
+- **The nearest relay may not work for a device.** `hbbs` can only check a relay from the
+  main server. If the chosen relay answers there but a device cannot reach it, that
+  device keeps being sent to it. Add a routing-table line for that device's network, or
+  use `use-relay`. See [multi-relay-architecture.md](multi-relay-architecture.md).
 - **A catch-all routing line** (`0.0.0.0/0`, see [relay-routing.md](relay-routing.md))
   claims every address, so the location is never consulted. Use one or the other.
 - **If the database or the locations file is missing or broken,** `hbbs` says so in its

@@ -16,7 +16,7 @@
 services:
   hbbs:
     container_name: rustdesk_hbbs
-    image: ghcr.io/yuanshi76/rustdesk-server:v0.2.0
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.4.0
     command: hbbs -r rustdesk.example.com:21117
     ports:
       - "21114:21114"       # rustdesk-api, published through this namespace
@@ -31,6 +31,11 @@ services:
       # answering the server's Ping included. A backstop, not a fix.
       - WS_IDLE_TIMEOUT=90
       # - MUST_LOGIN=Y                            # refuse a client with no login token
+      # Optional: nearest relay by where a device is (docs/geo-routing.md). Needs the
+      # database file and relay_locations.txt in ./data, and an updater container if you
+      # want the database refreshed monthly (see that document).
+      # - GEO_DB=/root/geo.mmdb
+      # - RELAY_LOCATIONS=/root/relay_locations.txt
       # - RUSTDESK_API_JWT_KEY=<shared with api>  # and verify that token as a JWT
     volumes:
       - ./data:/root
@@ -39,7 +44,7 @@ services:
 
   hbbr:
     container_name: rustdesk_hbbr
-    image: ghcr.io/yuanshi76/rustdesk-server:v0.2.0
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.4.0
     command: hbbr
     volumes:
       - ./data:/root

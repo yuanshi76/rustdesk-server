@@ -16,11 +16,18 @@
 services:
   hbbr:
     container_name: rustdesk_hbbr
-    image: ghcr.io/yuanshi76/rustdesk-server:v0.3.0
-    # By default hbbr accepts any client. To make it check the key, give it the same
-    # key as hbbs: the contents of hbbs's id_ed25519.pub.
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.4.0
+    # By default hbbr accepts any client, so anyone who learns this address can use this
+    # machine's bandwidth. To accept only your clients, give it the same text they have
+    # in their Key field: the FULL contents of hbbs's id_ed25519.pub, one line ending in =.
+    #
+    #     command: hbbr -k <contents of id_ed25519.pub>
+    #
+    # Do NOT write `-k _` here. That makes hbbr create its own key pair in this machine's
+    # folder, which differs from hbbs's, and every client is then refused with
+    # "Relay authentication failed ... invalid key" in this relay's log. See
+    # docs/multi-relay-architecture.md.
     command: hbbr
-    # command: hbbr -k <contents of id_ed25519.pub>
     ports:
       - "21117:21117"       # relay
       - "21119:21119"       # relay websocket

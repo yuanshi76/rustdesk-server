@@ -20,7 +20,7 @@
 services:
   rustdesk-server:
     container_name: rustdesk_server
-    image: ghcr.io/yuanshi76/rustdesk-server-s6:v0.2.0
+    image: ghcr.io/yuanshi76/rustdesk-server-s6:v0.4.0
     environment:
       - RELAY=rustdesk.example.com:21117
       # 0 is the default and matches the classic scheme above: a key pair exists

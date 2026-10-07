@@ -21,7 +21,7 @@
 services:
   rustdesk:
     container_name: rustdesk
-    image: ghcr.io/yuanshi76/rustdesk-server-s6-api:v0.2.0
+    image: ghcr.io/yuanshi76/rustdesk-server-s6-api:v0.4.0
     environment:
       - TZ=UTC
       # --- hbbs / hbbr ---

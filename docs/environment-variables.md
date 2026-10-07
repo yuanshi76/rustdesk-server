@@ -70,7 +70,7 @@ in the inherited process environment.
 
 | Variable | CLI flag | Default | Description |
 |---|---|---|---|
-| `KEY` | `-k`, `--key` | *(empty)* | The empty default intentionally disables relay key validation, avoiding key-pair setup and mismatch failures. To enable relay key validation, use the same non-empty key as `hbbs`; `-` / `_` have the same behavior and load or generate a key pair. An empty key allows clients without a matching key to use the relay, so choose this tradeoff deliberately on an exposed server. |
+| `KEY` | `-k`, `--key` | *(empty)* | The empty default intentionally disables relay key validation, avoiding key-pair setup and mismatch failures. To enable relay key validation, use the same non-empty key as `hbbs`: the full text of its `id_ed25519.pub`. `-` / `_` have the same behavior and load or generate a key pair **in the relay's own folder**, which is the same key as `hbbs`'s only if they share that folder (one machine). On a separate relay machine `-k _` makes a different key and every client is refused; see [multi-relay-architecture.md](multi-relay-architecture.md#keys). An empty key allows clients without a matching key to use the relay, so choose this tradeoff deliberately on an exposed server. |
 | `BIND` | `-b`, `--bind` | all interfaces | **Available since 1.1.17.** Local IPv4 or IPv6 address on which the relay TCP and WebSocket listeners bind. Supported by `.env` and the inherited environment; `hbbr` does not support `--config`. |
 | `PORT` | `-p`, `--port` | `21117` | Relay listening port. `hbbr` also binds `PORT+2` for WebSocket relay. **Note:** when set via the `PORT` env var (not `-p`), `hbbr` listens on `PORT + 1`, so a shared `PORT=21116` makes `hbbs`=21116 and `hbbr`=21117. |
 

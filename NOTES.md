@@ -845,3 +845,44 @@ seconds after, `test-relay` located 223.5.5.5 in Hangzhou, a second `geo-update`
 nothing newer, a restart did not download again, whole container 4 MB RSS idle. Image
 growth: +4.3 MB each (rustls and the root certificates). Not exercised: a real month
 rollover, and `--loop`'s failure retry (tested in unit form only).
+
+
+### Pre-release review for v0.4.0 (2026-10-06)
+
+Looked for ways the plan could take the main server down or silently do the wrong
+thing. Found and fixed:
+
+1. **A real crash.** hbbs mapped the GeoIP file itself. Emptying the file in place
+   (`curl -o geo.mmdb`, unpacking onto it, `> geo.mmdb`) while hbbs runs is a truncation
+   under a live mapping: SIGBUS on the next lookup, i.e. the main server dies. Reproduced
+   first (`overwriting_the_database_in_place_cannot_crash_hbbs` failed with a reset
+   connection), then fixed by mapping a private copy that is unlinked at once
+   (`relay_geo::open_mapped`; beside the file, else the temp folder, else the file itself
+   with a warning). A half-written original is rejected and the previous DB kept.
+   Costs about the database's size in free disk while it is in use. Windows maps the file
+   itself (cannot unlink a mapped file).
+2. The reload copied and opened the database **while holding the lock** that session
+   placement waits on. It now looks under the lock, does the work outside it (and
+   `block_in_place`), and assigns under it.
+3. A relay missing from the locations file was silently treated as 1000 ms away and so
+   never chosen (the user's own log had 2 locations and 1 relay). Now warned in the log,
+   shown by `relay-routes`, and the reverse (location with no relay) is reported too.
+4. A non-City database loads but places nothing; now warned. Nonsense or non-finite
+   coordinates from a damaged file are discarded.
+
+Checked and fine: no lock-order cycle (geo -> servers only, never the reverse); no panic
+reachable from network input in the new code (`live[n % len]` is guarded by len >= 2); the
+chosen relay is the same for the two questions about one attempt (pin); a relay that
+stops answering is skipped; every file failure keeps the previous data.
+
+Known limits, written into docs/multi-relay-architecture.md: a relay is checked only from
+the main server, so a relay that works there but not for one device keeps being chosen for
+that device (override with a routing line or `use-relay`); the main server is a single
+point of failure for new sessions; nearest on the map is not always fastest across
+carriers. Not tested: real RustDesk clients, and the v0.2.1 handshake change against
+them, in this repository (the user is testing on their own deployment).
+
+Also written down: remote `hbbr` must use `-k <hbbs public key text>`, never `-k _`
+(`docs/multi-relay-architecture.md`, relay-node compose, env doc). hbbr compares the
+client's `licence_key` (its Key field = hbbs's public key) with its own `-k` string;
+`-k _` loads or creates `id_ed25519` in the relay's own working folder.

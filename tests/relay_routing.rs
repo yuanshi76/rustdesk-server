@@ -109,6 +109,11 @@ fn start_hbbs(port: i32, name: &str, relays: &[&str], env: &[(&str, &str)]) -> H
 }
 
 impl Hbbs {
+    /// Is the process still running?
+    fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
     fn log(&self) -> String {
         self.log.lock().map(|l| l.clone()).unwrap_or_default()
     }
@@ -868,5 +873,111 @@ async fn the_first_download_is_picked_up_by_an_hbbs_that_started_without_a_datab
     for n in 1..=3 {
         assert_eq!(pair.attempt().await, r1.addr, "attempt {n}");
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overwriting_the_database_in_place_cannot_crash_hbbs() {
+    const PORT: i32 = 20356;
+    // The mistake: `curl -o geo.mmdb`, or unpacking straight onto the file, instead
+    // of renaming a new file over it. The file is emptied and refilled while hbbs is
+    // running. If hbbs read it by mapping the file itself, the next lookup after the
+    // truncation would kill the whole server.
+    let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
+    let dir = std::env::temp_dir().join(format!("geo-inplace-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    write_routes(
+        &locations,
+        &format!("{} 22.3,114.2\n{} 51.5,-0.1\n", r1.addr, r2.addr),
+    );
+    let db = dir.join("geo.mmdb");
+    std::fs::copy(GEO_DB, &db).unwrap();
+    let mut hbbs = start_hbbs(
+        PORT,
+        "geo-inplace",
+        &[&r1.addr, &r2.addr],
+        &[
+            ("RELAY_PIN_TTL", "0"),
+            ("GEO_DB", db.to_str().unwrap()),
+            ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ],
+    );
+    wait_for_port(PORT + 2).await;
+    let mut pair = Pair::connect_from(PORT + 2, &hbbs.pk, "10.40.0.1", "10.40.0.2").await;
+    assert_eq!(pair.attempt().await, r1.addr);
+
+    // Empty the file in place, then keep using hbbs through the moment it is half
+    // written and the moment it is whole again.
+    std::fs::write(&db, b"").unwrap();
+    for n in 1..=5 {
+        let got = pair.attempt().await;
+        assert!(got == r1.addr || got == r2.addr, "attempt {n}: {got}");
+        assert!(
+            hbbs.alive(),
+            "hbbs died after the database was emptied in place"
+        );
+    }
+    // Refill it in place with a database that says the range is in London.
+    let swapped = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/data/geo-test-swapped.mmdb"
+    ))
+    .unwrap();
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().write(true).open(&db).unwrap();
+        f.write_all(&swapped).unwrap();
+    }
+    settle_on(
+        &mut pair,
+        &r2.addr,
+        Duration::from_secs(15),
+        "the refilled database",
+    )
+    .await;
+    assert!(
+        hbbs.alive(),
+        "hbbs died after the database was refilled in place"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relay_with_no_location_is_reported_instead_of_silently_ignored() {
+    const PORT: i32 = 20366;
+    let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
+    let dir = std::env::temp_dir().join(format!("geo-missing-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let locations = dir.join("locations.txt");
+    // r2 is missing, and a relay hbbs has never been told about is listed.
+    write_routes(
+        &locations,
+        &format!("{} 22.3,114.2\n203.0.113.9:21117 51.5,-0.1\n", r1.addr),
+    );
+    let hbbs = start_hbbs(
+        PORT,
+        "geo-missing",
+        &[&r1.addr, &r2.addr],
+        &[
+            ("GEO_DB", GEO_DB),
+            ("RELAY_LOCATIONS", locations.to_str().unwrap()),
+        ],
+    );
+    wait_for_port(PORT + 2).await;
+    let log = hbbs.log();
+    assert!(
+        log.contains(&format!("relay {} has no entry", r2.addr)),
+        "the relay with no location was not reported:\n{log}"
+    );
+    assert!(
+        log.contains("203.0.113.9:21117, which is not in the relay list"),
+        "the unused location was not reported:\n{log}"
+    );
+    let said = console(PORT, "relay-routes").await;
+    assert!(
+        said.contains("WARNING: no location for") && said.contains(&r2.addr),
+        "{said}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

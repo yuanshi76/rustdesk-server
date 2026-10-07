@@ -7,6 +7,7 @@
 //! table entry (see `relay_routes`), for the addresses the table has no line for.
 
 use crate::relay_routes::normalize;
+use hbb_common::log;
 use std::{collections::HashMap, net::IpAddr, path::Path};
 
 /// Rough conversion from distance to round-trip time: light in fibre covers about
@@ -94,6 +95,24 @@ impl Locations {
         self.relays.len()
     }
 
+    /// Does this list say where `relay` is?
+    pub fn knows(&self, relay: &str) -> bool {
+        self.relays.contains_key(&normalize(relay))
+    }
+
+    /// Relays in this list that are not among `relays`.
+    pub fn not_in(&self, relays: &[String]) -> Vec<String> {
+        let have: std::collections::HashSet<String> = relays.iter().map(|r| normalize(r)).collect();
+        let mut extra: Vec<String> = self
+            .relays
+            .keys()
+            .filter(|r| !have.contains(*r))
+            .cloned()
+            .collect();
+        extra.sort();
+        extra
+    }
+
     /// Estimated milliseconds from `at` to every relay whose position is known. A
     /// relay with no position is left out, which makes it lose to any that has one.
     pub fn costs_from(&self, at: Point) -> HashMap<String, f64> {
@@ -107,19 +126,96 @@ impl Locations {
 /// An open GeoIP database.
 pub struct GeoDb {
     locate: Box<dyn Fn(IpAddr) -> Option<Point> + Send + Sync>,
+    kind: String,
+}
+
+/// Map a private copy of the file, never the file itself.
+///
+/// A mapped file that is truncated underneath the mapping kills the process with
+/// SIGBUS on the next access to a page that is no longer there, and "the next access"
+/// is a lookup for some device, in a server everyone depends on. Truncation is what
+/// `curl -o geo.mmdb`, or unpacking straight onto the file, does. So the file is copied
+/// first and the copy mapped; the copy is unlinked at once, and the kernel keeps its
+/// data until the mapping is dropped. Whatever happens to the original afterwards
+/// cannot reach the running server; a half-written original just fails to open and the
+/// previous database stays in use.
+#[cfg(unix)]
+fn open_mapped(path: &Path) -> Result<maxminddb::Reader<maxminddb::Mmap>, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    // A copy left behind by a process that died between copying and unlinking.
+    if let Ok(entries) = std::fs::read_dir(path.parent().unwrap_or_else(|| Path::new("."))) {
+        for e in entries.flatten() {
+            let f = e.file_name().to_string_lossy().into_owned();
+            if f.starts_with(&format!(".{name}.")) && f.ends_with(".loaded") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let copy_name = format!(
+        ".{name}.{}.{}.loaded",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    );
+    // Beside the original if that folder can be written (it normally can: it is the
+    // data folder), otherwise in the temporary folder, which a read-only single-file
+    // mount or a minimal image may or may not have.
+    let mut copy_error = String::new();
+    for dir in [
+        path.parent().map(Path::to_path_buf),
+        Some(std::env::temp_dir()),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let copy = dir.join(&copy_name);
+        match std::fs::copy(path, &copy) {
+            Ok(_) => {
+                // SAFETY: the copy is private to this process and is unlinked below,
+                // so nothing else can modify it while it is mapped.
+                let reader = unsafe { maxminddb::Reader::open_mmap(&copy) };
+                let _ = std::fs::remove_file(&copy);
+                return reader.map_err(|e| format!("cannot open {}: {e}", path.display()));
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&copy);
+                copy_error = format!("{}: {e}", dir.display());
+            }
+        }
+    }
+    // Nowhere to put a copy. Map the original, which is safe while nothing writes to
+    // it; a read-only mount cannot be written from inside the container.
+    log::warn!(
+        "geo database: no folder to copy {} into ({copy_error}); reading it in place, \
+         so replace it only by renaming a new file over it",
+        path.display()
+    );
+    // SAFETY: as in the non-unix version below.
+    unsafe { maxminddb::Reader::open_mmap(path) }
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))
+}
+
+/// Windows cannot unlink a mapped file, so there the file itself is mapped.
+#[cfg(not(unix))]
+fn open_mapped(path: &Path) -> Result<maxminddb::Reader<maxminddb::Mmap>, String> {
+    // SAFETY: the file is only read; update it by renaming a new one over it.
+    unsafe { maxminddb::Reader::open_mmap(path) }
+        .map_err(|e| format!("cannot open {}: {e}", path.display()))
 }
 
 impl GeoDb {
-    /// The file is mapped, not read: the City database is over 100 MB and only the
-    /// parts a lookup touches are paged in. Replace the file by renaming a new one
-    /// over it, never by writing into it, which would pull the ground from under
-    /// the mapping.
+    /// The copy is mapped, not read into memory: the City database is over 100 MB and
+    /// only the parts a lookup touches are paged in. See `open_mapped` for why it is
+    /// a copy.
     pub fn open(path: &Path) -> Result<Self, String> {
-        // SAFETY: the mapping is only read. The documented way to update the file is
-        // a rename, which leaves the mapped inode intact.
-        let reader = unsafe { maxminddb::Reader::open_mmap(path) }
-            .map_err(|e| format!("cannot open {}: {e}", path.display()))?;
+        let reader = open_mapped(path)?;
+        let kind = reader.metadata().database_type.clone();
         Ok(Self {
+            kind,
             locate: Box::new(move |ip| {
                 use maxminddb::PathElement::Key;
                 let found = reader.lookup(ip).ok()?;
@@ -129,9 +225,21 @@ impl GeoDb {
                 let lon: f64 = found
                     .decode_path(&[Key("location"), Key("longitude")])
                     .ok()??;
+                // A damaged file must not feed nonsense into the distance sums.
+                if !(lat.is_finite() && lon.is_finite())
+                    || !(-90.0..=90.0).contains(&lat)
+                    || !(-180.0..=180.0).contains(&lon)
+                {
+                    return None;
+                }
                 Some(Point { lat, lon })
             }),
         })
+    }
+
+    /// What the database says it is, for example "DBIP-City-Lite" or "GeoIP2-Country".
+    pub fn kind(&self) -> &str {
+        &self.kind
     }
 
     /// Is this file a usable City database? Used on a download before it replaces the
@@ -233,6 +341,27 @@ mod tests {
         // An address the database does not know, and a private one outside it.
         assert_eq!(at("8.8.8.8"), None);
         assert_eq!(at("192.168.1.1"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_database_in_a_read_only_folder_still_opens() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("geo-readonly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("geo.mmdb");
+        std::fs::copy(FIXTURE, &db).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let opened = GeoDb::open(&db);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let leftovers: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        let db = opened.expect("a database in a read-only folder did not open");
+        assert!(db.locate("10.40.0.1".parse().unwrap()).is_some());
+        assert_eq!(leftovers, ["geo.mmdb"], "left copies behind");
     }
 
     #[test]

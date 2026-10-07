@@ -50,6 +50,7 @@ More detail, by question:
 |---|---|
 | How to measure latency to your relays, step by step | [docs/measuring-latency.md](docs/measuring-latency.md) |
 | How to send each device to the nearest relay by where it is, wherever it travels | [docs/geo-routing.md](docs/geo-routing.md) |
+| How several relays fit together: machines, ports, keys, and the API server | [docs/multi-relay-architecture.md](docs/multi-relay-architecture.md) |
 | How to switch between several relay servers with one client configuration | [docs/switching-relays.md](docs/switching-relays.md) |
 | How to run several relay servers and choose the nearest | [docs/relay-routing.md](docs/relay-routing.md) |
 | How the API server relates to `hbbs` and `hbbr`, and the login-token trap | [docs/api-server.md](docs/api-server.md) |

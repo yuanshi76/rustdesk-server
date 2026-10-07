@@ -1680,74 +1680,115 @@ impl RendezvousServer {
     /// Called every few seconds, next to `reload_relay_routes`, with the same rule: a
     /// file that cannot be read is reported once and the previous one stays in force.
     fn reload_relay_geo(&self) {
-        fn stamp(path: &std::path::Path) -> Option<(SystemTime, u64)> {
+        type Stamp = Option<(SystemTime, u64)>;
+        fn stamp(path: &std::path::Path) -> Stamp {
             let m = std::fs::metadata(path).ok()?;
             Some((m.modified().ok()?, m.len()))
         }
+        // Look under the lock, work outside it. Opening the database copies it, and
+        // session placement waits on this lock, so nothing slow may happen inside.
+        let (db_path, db_seen, loc_path, loc_seen) = match self.relay_geo.lock() {
+            Ok(g) => (g.db_path.clone(), g.db_seen, g.loc_path.clone(), g.loc_seen),
+            Err(_) => return,
+        };
+        let db_now = db_path.as_deref().map(stamp);
+        let loc_now = loc_path.as_deref().map(stamp);
+        let db_changed = db_now.is_some() && db_seen != db_now;
+        let loc_changed = loc_now.is_some() && loc_seen != loc_now;
+        if !db_changed && !loc_changed {
+            return;
+        }
+
+        let db_loaded = match (&db_path, db_changed, db_now.flatten()) {
+            (Some(path), true, Some(_)) => {
+                // A copy of a file this size takes a moment; other tasks move to
+                // other threads meanwhile.
+                Some(tokio::task::block_in_place(|| GeoDb::open(path)))
+            }
+            (Some(path), true, None) => Some(Err(format!("cannot read {}", path.display()))),
+            _ => None,
+        };
+        let loc_loaded = match (&loc_path, loc_changed, loc_now.flatten()) {
+            (Some(path), true, Some(_)) => Some(Locations::load(path)),
+            (Some(path), true, None) => Some(Err(format!("cannot read {}", path.display()))),
+            _ => None,
+        };
+
+        let mut changed = false;
         let Ok(mut g) = self.relay_geo.lock() else {
             return;
         };
-        let mut changed = false;
-        if let Some(path) = g.db_path.clone() {
-            let now = stamp(&path);
-            if g.db_seen != Some(now) {
-                g.db_seen = Some(now);
-                let loaded = match now {
-                    Some(_) => GeoDb::open(&path),
-                    None => Err(format!("cannot read {}", path.display())),
-                };
-                match loaded {
-                    Ok(db) => {
-                        log::info!("geo database: loaded {}", path.display());
-                        g.db = Some(db);
-                        g.db_error = None;
-                        changed = true;
-                    }
-                    Err(err) => {
-                        log::error!(
-                            "geo database: {err}; keeping {}",
-                            if g.db.is_some() {
-                                "the previous one"
-                            } else {
-                                "none"
-                            }
+        if let (Some(path), Some(loaded)) = (&db_path, db_loaded) {
+            g.db_seen = db_now;
+            match loaded {
+                Ok(db) => {
+                    log::info!("geo database: loaded {} ({})", path.display(), db.kind());
+                    if !db.kind().contains("City") {
+                        log::warn!(
+                            "geo database: this is a {:?} database, which has no coordinates, \
+                             so no address will be placed; use a City database",
+                            db.kind()
                         );
-                        g.db_error = Some(err);
                     }
+                    g.db = Some(db);
+                    g.db_error = None;
+                    changed = true;
+                }
+                Err(err) => {
+                    log::error!(
+                        "geo database: {err}; keeping {}",
+                        if g.db.is_some() {
+                            "the previous one"
+                        } else {
+                            "none"
+                        }
+                    );
+                    g.db_error = Some(err);
                 }
             }
         }
-        if let Some(path) = g.loc_path.clone() {
-            let now = stamp(&path);
-            if g.loc_seen != Some(now) {
-                g.loc_seen = Some(now);
-                let loaded = match now {
-                    Some(_) => Locations::load(&path),
-                    None => Err(format!("cannot read {}", path.display())),
-                };
-                match loaded {
-                    Ok(l) => {
-                        log::info!(
-                            "relay locations: loaded {} relay(s) from {}",
-                            l.len(),
-                            path.display()
-                        );
-                        g.locations = Some(l);
-                        g.loc_error = None;
-                        changed = true;
-                    }
-                    Err(err) => {
-                        log::error!(
-                            "relay locations: {}: {err}; keeping {}",
-                            path.display(),
-                            if g.locations.is_some() {
-                                "the previous list"
-                            } else {
-                                "none"
-                            }
-                        );
-                        g.loc_error = Some(err);
-                    }
+        if let (Some(path), Some(loaded)) = (&loc_path, loc_loaded) {
+            g.loc_seen = loc_now;
+            match loaded {
+                Ok(l) => {
+                    log::info!(
+                        "relay locations: loaded {} relay(s) from {}",
+                        l.len(),
+                        path.display()
+                    );
+                    g.locations = Some(l);
+                    g.loc_error = None;
+                    changed = true;
+                }
+                Err(err) => {
+                    log::error!(
+                        "relay locations: {}: {err}; keeping {}",
+                        path.display(),
+                        if g.locations.is_some() {
+                            "the previous list"
+                        } else {
+                            "none"
+                        }
+                    );
+                    g.loc_error = Some(err);
+                }
+            }
+        }
+        // A relay with no position is treated as very far away and is chosen only if
+        // nothing else can be. That is almost always a typo, so say so.
+        if loc_changed {
+            if let Some(l) = &g.locations {
+                let configured = self.live_relays();
+                for relay in configured.iter().filter(|r| !l.knows(r)) {
+                    log::warn!(
+                        "relay {relay} has no entry in the relay locations; it will be treated \
+                         as very far away. Write it there exactly as in the relay list (host:port)"
+                    );
+                }
+                for extra in l.not_in(&configured) {
+                    log::warn!(
+                        "relay locations has {extra}, which is not in the relay list, so it is ignored"
+                    );
                 }
             }
         }
@@ -2009,6 +2050,23 @@ impl RendezvousServer {
                                         e.clone().unwrap_or_default()
                                     ),
                                 }
+                            );
+                        }
+                    }
+                }
+                if let Ok(g) = self.relay_geo.lock() {
+                    if let Some(l) = &g.locations {
+                        let live = self.live_relays();
+                        let missing: Vec<&str> = live
+                            .iter()
+                            .filter(|r| !l.knows(r))
+                            .map(|r| r.as_str())
+                            .collect();
+                        if !missing.is_empty() {
+                            let _ = writeln!(
+                                res,
+                                "WARNING: no location for {}: treated as very far away",
+                                missing.join(", ")
                             );
                         }
                     }
