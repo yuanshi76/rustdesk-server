@@ -834,5 +834,14 @@ tests. In `tests/relay_routing.rs`: an update reaches a running hbbs and changes
 the same devices go, and an hbbs started with no database file picks it up when it
 appears.
 
-Not run: the image-level service (needs the Linux binaries; checked from the CI build)
-and a real download through the images' rustls against download.db-ip.com.
+Verified in the CI-built images (manual build, tag `1.1.16-4de04b7`, from commit
+4de04b7; this is `UPSTREAM_RELEASE`-`REV`, not a release): classic image refuses
+`expired.badssl.com` and `wrong.host.badssl.com` ("invalid peer certificate") and reaches
+download.db-ip.com over checked TLS (a 404 path gave "neither ... is published"). The s6
+image with `GEO_AUTO_UPDATE=Y` and `RELAY_LOCATIONS`: hbbs started first and logged "cannot
+read /data/geo.mmdb; keeping none", the service downloaded the real file 10 s later (sha256
+identical to the file fetched by hand earlier), hbbs logged "geo database: loaded" two
+seconds after, `test-relay` located 223.5.5.5 in Hangzhou, a second `geo-update` said
+nothing newer, a restart did not download again, whole container 4 MB RSS idle. Image
+growth: +4.3 MB each (rustls and the root certificates). Not exercised: a real month
+rollover, and `--loop`'s failure retry (tested in unit form only).
