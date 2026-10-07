@@ -81,3 +81,38 @@ nothing for it.
   start. Sessions already running continue, because `hbbs` is not on their data path.
 - **Near on the map is not always fast.** Different carriers connect to each other in
   different places.
+
+## If every session uses the same relay
+
+Work out which of these it is, in this order. Each command runs on the main server; the
+console commands are explained in [environment-variables.md](environment-variables.md#runtime-console).
+The classic image has no shell, so borrow its network:
+
+```bash
+C="docker run --rm --network container:rustdesk_hbbs busybox:stable sh -c"
+```
+
+1. **Does `hbbs` see the other relay as alive?**
+   `$C "printf 'relay-servers' | nc -w 2 127.0.0.1 21115"` lists the relays it will
+   choose from. If the far relay is missing, it is not answering **from the main server's
+   container**: check its firewall and security group, and the port you wrote in `-r`.
+2. **Is a relay missing from the locations file?**
+   `$C "printf 'relay-routes' | nc -w 2 127.0.0.1 21115"` prints `WARNING: no location for ...`
+   when a relay in the list has no line in `relay_locations.txt`. The address must match
+   `-r` exactly (`host:port`; an IP and a name for the same machine count as different).
+   Such a relay is treated as very far away and never chosen.
+3. **Is `use-relay` set?** `$C "printf 'use-relay' | nc -w 2 127.0.0.1 21115"` says
+   `none: relays are chosen automatically` when it is not.
+4. **What did the server decide for real sessions, and whose addresses did it see?**
+   `docker logs rustdesk_hbbs 2>&1 | grep "relay for" | tail` prints one line per
+   session: the two addresses it saw, the relay it chose and why (`geo`, `routes`,
+   `round-robin`, `preferred`, `only relay`). If the addresses are Docker's internal
+   `172.x` ones, the main server cannot see where devices are and nothing can be placed.
+   If it chose the far relay but the session used the near one, step 5 is the cause.
+5. **Does a device have its own relay set?** A machine **being connected to** that has
+   anything in **Relay server** (Settings, Network) uses it instead of the server's choice.
+   Clear it on every machine you connect to. The API server hands the same value out in
+   its config: `RUSTDESK_API_RUSTDESK_RELAY_SERVER` must be unset, and a device that
+   imported that config earlier still has it until you clear the field.
+6. **Is the session direct?** Devices try a direct connection first. A session that does
+   not go through a relay at all uses no relay; test with a forced relay connection.

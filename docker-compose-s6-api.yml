@@ -31,7 +31,11 @@ services:
       - WS_IDLE_TIMEOUT=90
       # --- API server ---
       - RUSTDESK_API_RUSTDESK_ID_SERVER=rustdesk.example.com:21116
-      - RUSTDESK_API_RUSTDESK_RELAY_SERVER=rustdesk.example.com:21117
+      # Leave the relay server UNSET when you run more than one relay (see
+      # docs/multi-relay-architecture.md). Anything written here is handed to clients in
+      # the config this API gives them, and a machine with its own relay set ignores the
+      # main server's choice, so every session would use this one relay.
+      # - RUSTDESK_API_RUSTDESK_RELAY_SERVER=rustdesk.example.com:21117
       - RUSTDESK_API_RUSTDESK_API_SERVER=http://rustdesk.example.com:21114
       - RUSTDESK_API_RUSTDESK_KEY=<contents of data/id_ed25519.pub>
       - RUSTDESK_API_APP_SHOW_SWAGGER=0
