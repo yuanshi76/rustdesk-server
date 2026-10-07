@@ -981,3 +981,45 @@ async fn a_relay_with_no_location_is_reported_instead_of_silently_ignored() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relay_written_with_a_space_or_not_resolving_yet_is_not_lost_and_a_bad_one_is_reported() {
+    const PORT: i32 = 20376;
+    let (r1, r2) = (FakeRelay::start().await, FakeRelay::start().await);
+    // `-r "R1, R2,not-yet.invalid:21117,http://bad"`: a space after a comma, a name that
+    // does not resolve (as when DNS fails at the moment hbbs starts), and a URL.
+    let second = format!(" {}", r2.addr);
+    let hbbs = start_hbbs(
+        PORT,
+        "relay-list",
+        &[
+            &r1.addr,
+            &second,
+            "not-yet.invalid:21117",
+            "http://bad.example",
+        ],
+        &[],
+    );
+    wait_for_port(PORT + 2).await;
+    let log = hbbs.log();
+    assert!(
+        log.contains(&format!(
+            "relay-servers=[\"{}\", \"{}\", \"not-yet.invalid:21117\"]",
+            r1.addr, r2.addr
+        )),
+        "the list hbbs started with is not what was written:\n{log}"
+    );
+    assert!(
+        log.contains("relay-servers: ignoring \"http://bad.example\"") && log.contains("URL"),
+        "the bad entry was dropped silently:\n{log}"
+    );
+    // The health check (every 3 s) leaves the two that answer; the one that does not
+    // resolve is not used, and would be as soon as it did.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    let live = console(PORT, "relay-servers").await;
+    assert_eq!(
+        live.lines().collect::<Vec<_>>(),
+        [r1.addr.as_str(), r2.addr.as_str()],
+        "{live}"
+    );
+}

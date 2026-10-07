@@ -888,3 +888,21 @@ Also written down: remote `hbbr` must use `-k <hbbs public key text>`, never `-k
 (`docs/multi-relay-architecture.md`, relay-node compose, env doc). hbbr compares the
 client's `licence_key` (its Key field = hbbs's public key) with its own `-k` string;
 `-k _` loads or creates `id_ed25519` in the relay's own working folder.
+
+
+### Relay list entries were dropped silently (found 2026-10-07, after v0.4.0)
+
+User report after deploying v0.4.0: relay B never used, always the main server's. Their
+`relay-servers` console output listed only the main relay, and "relay for" never appeared
+(with one live relay `pick_relay` returns early and logs nothing). Cause not yet known (we
+asked for the `relay-servers=[...]` start-up line to separate "never given" from "fails the
+health check"), but reading `common.rs` showed a real trap: `get_servers` does not trim,
+and `test_if_valid_server` resolves each entry at start-up and drops it for the life of
+the process on any failure, **without logging** (the `?` returns before the `log::error!`).
+So `-r "A:31107, B:31107"` (space) or one DNS failure at start-up lost B silently.
+Fix (to ship as v0.4.1): `relay_routes::parse_relay_list` trims, validates the form only,
+never resolves, logs each dropped entry with the reason; the health check decides liveness.
+Test: a real hbbs with a leading-space entry, a non-resolving name and a URL; fails against
+the old parsing. Also: my example compose files set the API's relay server to the main
+relay (clients inherit it, and a device with a relay set ignores the server's choice);
+commented out in 62f56ae.

@@ -1335,7 +1335,11 @@ impl RendezvousServer {
     }
 
     fn parse_relay_servers(&mut self, relay_servers: &str) {
-        let rs = get_servers(relay_servers, "relay-servers");
+        let (rs, dropped) = crate::relay_routes::parse_relay_list(relay_servers);
+        for (entry, why) in &dropped {
+            log::error!("relay-servers: ignoring {entry:?}: {why}");
+        }
+        log::info!("relay-servers={:?}", rs);
         self.relay_servers0 = Arc::new(rs);
         self.set_live_relays(self.relay_servers0.clone());
     }

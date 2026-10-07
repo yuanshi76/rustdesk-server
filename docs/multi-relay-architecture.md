@@ -94,8 +94,18 @@ C="docker run --rm --network container:rustdesk_hbbs busybox:stable sh -c"
 
 1. **Does `hbbs` see the other relay as alive?**
    `$C "printf 'relay-servers' | nc -w 2 127.0.0.1 21115"` lists the relays it will
-   choose from. If the far relay is missing, it is not answering **from the main server's
-   container**: check its firewall and security group, and the port you wrote in `-r`.
+   choose from. If the far relay is missing there are two possible reasons, and the
+   start-up log tells them apart: `docker logs rustdesk_hbbs 2>&1 | grep relay-servers`.
+   - **It is missing from that log line too** (`relay-servers=[...]`): `hbbs` was not
+     given it. Check the `-r` / `RELAY` setting for a typo, a URL instead of
+     `host:port`, or a space. **Versions before v0.4.1 dropped such an entry, and any
+     name that did not resolve at the moment of start-up, without saying so**; v0.4.1
+     trims spaces, keeps names that do not resolve yet, and logs an `ignoring ...` error
+     for an entry it cannot use.
+   - **It is in the log line but not in `relay-servers`:** it is not answering **from the
+     main server's container**. Check its firewall and security group, and the port you
+     wrote in `-r`, and test with
+     `$C "nc -w 3 RELAY_HOST PORT </dev/null; echo exit=\$?"` (0 means it connected).
 2. **Is a relay missing from the locations file?**
    `$C "printf 'relay-routes' | nc -w 2 127.0.0.1 21115"` prints `WARNING: no location for ...`
    when a relay in the list has no line in `relay_locations.txt`. The address must match

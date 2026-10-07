@@ -39,6 +39,76 @@ pub fn normalize(relay: &str) -> String {
     }
 }
 
+/// Split a relay list as written in `-r` / `RELAY`: comma-separated `host` or
+/// `host:port`. Returns the entries to use and, for each one set aside, why.
+///
+/// Entries are trimmed (a space after a comma is easy to write and was silently fatal
+/// to the entry). An entry is **not** resolved here: it used to be, and one that failed
+/// to resolve at the moment `hbbs` started, a DNS hiccup is enough, was dropped for the
+/// life of the process. The health check, which runs every few seconds when there is
+/// more than one relay, is what decides whether a relay is usable.
+pub fn parse_relay_list(list: &str) -> (Vec<String>, Vec<(String, String)>) {
+    let (mut kept, mut dropped) = (Vec::new(), Vec::new());
+    for raw in list.split(',') {
+        let entry = raw.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        match relay_entry_problem(entry) {
+            None => {
+                if kept
+                    .iter()
+                    .any(|k: &String| normalize(k) == normalize(entry))
+                {
+                    dropped.push((entry.to_owned(), "listed twice".to_owned()));
+                } else {
+                    kept.push(entry.to_owned());
+                }
+            }
+            Some(why) => dropped.push((entry.to_owned(), why)),
+        }
+    }
+    (kept, dropped)
+}
+
+fn relay_entry_problem(entry: &str) -> Option<String> {
+    if entry.chars().any(char::is_whitespace) {
+        return Some("contains a space".to_owned());
+    }
+    if entry.contains("://") || entry.contains('/') {
+        return Some("is a URL; write just host or host:port".to_owned());
+    }
+    let (host, port) = if let Some(rest) = entry.strip_prefix('[') {
+        // [v6]:port or [v6]
+        let (v6, after) = rest.split_once(']')?;
+        let _ = v6;
+        (entry, after.strip_prefix(':'))
+    } else {
+        match entry.matches(':').count() {
+            0 => (entry, None),
+            1 => {
+                let (h, p) = entry.split_once(':')?;
+                (h, Some(p))
+            }
+            _ => {
+                return Some(
+                    "has several colons; an IPv6 address needs brackets, [::1]:21117".to_owned(),
+                )
+            }
+        }
+    };
+    if host.is_empty() || host == ":" {
+        return Some("has no host".to_owned());
+    }
+    if let Some(p) = port {
+        match p.parse::<u16>() {
+            Ok(n) if n > 0 => {}
+            _ => return Some(format!("{p:?} is not a port number")),
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 struct Rule {
     net: IpNetwork,
@@ -207,6 +277,43 @@ mod tests {
         203.0.113.0/24   hk.example.com:21117=38, sh.example.com:21117=95
         198.51.100.0/22  sh.example.com:21117=12  hk.example.com:21117=80
     ";
+
+    #[test]
+    fn a_relay_list_is_trimmed_and_checked_but_never_resolved() {
+        let (kept, dropped) = parse_relay_list(
+            "a.example.com:31107, b.example.com:31107 ,no-such-host.invalid,[::1]:21117",
+        );
+        assert_eq!(
+            kept,
+            [
+                "a.example.com:31107",
+                "b.example.com:31107",
+                "no-such-host.invalid",
+                "[::1]:21117"
+            ]
+        );
+        assert!(dropped.is_empty(), "{dropped:?}");
+
+        for (entry, why) in [
+            ("http://a.example.com:21117", "URL"),
+            ("a.example.com:abc", "not a port"),
+            ("a.example.com:0", "not a port"),
+            ("a.example.com:70000", "not a port"),
+            ("::1", "IPv6"),
+            (":21117", "no host"),
+            ("a b", "space"),
+        ] {
+            let (kept, dropped) = parse_relay_list(&format!("ok.example.com,{entry}"));
+            assert_eq!(kept, ["ok.example.com"], "{entry}");
+            assert_eq!(dropped.len(), 1, "{entry}");
+            assert!(dropped[0].1.contains(why), "{entry}: {:?}", dropped[0]);
+        }
+        // The same relay written twice, one with the default port spelled out.
+        let (kept, dropped) = parse_relay_list("a.example.com,A.example.com:21117");
+        assert_eq!(kept, ["a.example.com"]);
+        assert_eq!(dropped[0].1, "listed twice");
+        assert_eq!(parse_relay_list("").0, Vec::<String>::new());
+    }
 
     #[test]
     fn a_session_costs_the_sum_of_both_legs() {
