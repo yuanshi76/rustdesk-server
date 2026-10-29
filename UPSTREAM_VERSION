@@ -6,9 +6,10 @@
 # record only.
 #
 # UPSTREAM_COMMIT is deliberately *ahead* of the UPSTREAM_RELEASE tag: it is the
-# head of upstream master at the time of the rebase, which carries the UDP
-# reflection/amplification fix (109d9a2) and hbb_common 69cea8d. See NOTES.md,
-# "Base selection".
+# head of upstream master when it was last merged (2026-10-29: 873230e, the
+# punch-request bound #713 and key file permissions #705), which also carries the
+# UDP reflection/amplification fix (109d9a2) and hbb_common 69cea8d. See NOTES.md,
+# "Base selection" and "Upstream merge 2026-10-29".
 UPSTREAM_RELEASE=1.1.16
-UPSTREAM_COMMIT=a7736be5e40f85bfc141120dce587e836e5d4b80
+UPSTREAM_COMMIT=873230e35a8805de7fd057e7eb763c46f7a174ef
 UPSTREAM_HBB_COMMON=69cea8dafee147848ae88702029f4bf7df7224c3

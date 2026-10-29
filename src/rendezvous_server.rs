@@ -36,7 +36,7 @@ use hbb_common::{
 };
 use ipnetwork::Ipv4Network;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     path::PathBuf,
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -218,14 +218,28 @@ impl Drop for WsPeerGuard {
 use once_cell::sync::Lazy;
 use tokio::sync::Mutex as TokioMutex; // differentiate if needed
 #[derive(Clone)]
-struct PunchReqEntry {
-    tm: Instant,
-    from_ip: String,
-    to_ip: String,
-    to_id: String,
-}
-static PUNCH_REQS: Lazy<TokioMutex<Vec<PunchReqEntry>>> = Lazy::new(|| TokioMutex::new(Vec::new()));
+struct PunchReqEntry { tm: Instant, from_ip: String, to_ip: String, to_id: String }
+static PUNCH_REQS: Lazy<TokioMutex<VecDeque<PunchReqEntry>>> = Lazy::new(|| TokioMutex::new(VecDeque::new()));
 const PUNCH_REQ_DEDUPE_SEC: u64 = 60;
+static PUNCH_REQ_MAX: Lazy<usize> =
+    Lazy::new(|| get_arg("MAX_PUNCH_REQUESTS").parse().unwrap_or(100_000));
+
+async fn record_punch_req(from_ip: String, to_ip: String, to_id: String) {
+    let max = *PUNCH_REQ_MAX;
+    if max == 0 { return; }
+    let mut lock = PUNCH_REQS.lock().await;
+    let mut dup = false;
+    for e in lock.iter().rev().take(30) { // only check recent tail subset for speed
+        if e.from_ip == from_ip && e.to_id == to_id {
+            if e.tm.elapsed().as_secs() < PUNCH_REQ_DEDUPE_SEC { dup = true; }
+            break;
+        }
+    }
+    if !dup {
+        if lock.len() >= max { lock.pop_front(); }
+        lock.push_back(PunchReqEntry { tm: Instant::now(), from_ip, to_ip, to_id });
+    }
+}
 
 #[derive(Clone)]
 struct Inner {
@@ -280,7 +294,7 @@ impl RendezvousServer {
         key: &str,
         rmem: usize,
     ) -> ResultType<()> {
-        let (key, sk) = Self::get_server_sk(key);
+        let (key, sk) = Self::get_server_sk(key)?;
         let nat_port = port - 1;
         let ws_port = port + 2;
         let pm = PeerMap::new().await?;
@@ -593,7 +607,7 @@ impl RendezvousServer {
             match msg_in.union {
                 Some(rendezvous_message::Union::RegisterPeer(rp)) => {
                     // B registered
-                    if !rp.id.is_empty() {
+                    if !rp.id.is_empty() && rp.id.len() <= MAX_PEER_ID_LEN {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
                         let request_pk = self.update_addr(rp.id, addr).await;
                         let mut msg_out = RendezvousMessage::new();
@@ -769,7 +783,7 @@ impl RendezvousServer {
                 }
                 Some(rendezvous_message::Union::RegisterPeer(rp)) => {
                     // B registered over TCP/WS rather than UDP.
-                    if !rp.id.is_empty() {
+                    if !rp.id.is_empty() && rp.id.len() <= MAX_PEER_ID_LEN {
                         log::trace!("New peer registered: {:?} {:?}", &rp.id, &addr);
                         let request_pk = self.update_addr(rp.id, addr).await;
                         let mut msg_out = RendezvousMessage::new();
@@ -835,7 +849,7 @@ impl RendezvousServer {
         }
         let id = rk.id;
         let ip = addr.ip().to_string();
-        if id.len() < 6 {
+        if id.len() < 6 || id.len() > MAX_PEER_ID_LEN {
             return Some(UUID_MISMATCH);
         } else if !self.check_ip_blocker(&ip, &id).await {
             return Some(TOO_FREQUENT);
@@ -1079,30 +1093,12 @@ impl RendezvousServer {
             }
 
             // record punch hole request (from addr -> peer id/peer_addr)
-            {
-                let from_ip = try_into_v4(addr).ip().to_string();
-                let to_ip = try_into_v4(peer_addr).ip().to_string();
-                let to_id_clone = id.clone();
-                let mut lock = PUNCH_REQS.lock().await;
-                let mut dup = false;
-                for e in lock.iter().rev().take(30) {
-                    // only check recent tail subset for speed
-                    if e.from_ip == from_ip && e.to_id == to_id_clone {
-                        if e.tm.elapsed().as_secs() < PUNCH_REQ_DEDUPE_SEC {
-                            dup = true;
-                        }
-                        break;
-                    }
-                }
-                if !dup {
-                    lock.push(PunchReqEntry {
-                        tm: Instant::now(),
-                        from_ip,
-                        to_ip,
-                        to_id: to_id_clone,
-                    });
-                }
-            }
+            record_punch_req(
+                try_into_v4(addr).ip().to_string(),
+                try_into_v4(peer_addr).ip().to_string(),
+                id.clone(),
+            )
+            .await;
 
             let mut msg_out = RendezvousMessage::new();
             let peer_is_lan = self.is_lan(peer_addr);
@@ -2383,7 +2379,7 @@ impl RendezvousServer {
     }
 
     #[inline]
-    fn get_server_sk(key: &str) -> (String, Option<sign::SecretKey>) {
+    fn get_server_sk(key: &str) -> ResultType<(String, Option<sign::SecretKey>)> {
         let mut out_sk = None;
         let mut key = key.to_owned();
         if let Ok(sk) = base64::decode(&key) {
@@ -2397,7 +2393,7 @@ impl RendezvousServer {
         }
 
         if key.is_empty() || key == "-" || key == "_" {
-            let (pk, sk) = crate::common::gen_sk(0);
+            let (pk, sk) = crate::common::gen_sk(0)?;
             out_sk = sk;
             if !key.is_empty() {
                 key = pk;
@@ -2407,7 +2403,7 @@ impl RendezvousServer {
         if !key.is_empty() {
             log::info!("Key: {}", key);
         }
-        (key, out_sk)
+        Ok((key, out_sk))
     }
 
     #[inline]
@@ -2563,5 +2559,27 @@ mod tests {
         let bind_addr = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let socket = create_udp_listener(Some(bind_addr), 0, 0).await.unwrap();
         assert_eq!(socket.local_addr().unwrap().ip(), bind_addr);
+    }
+
+    #[hbb_common::tokio::test]
+    async fn punch_reqs_bounded() {
+        let max = *PUNCH_REQ_MAX;
+        // 31 ids keep every request just outside the 30-entry dedupe window;
+        // one request at least, so MAX_PUNCH_REQUESTS=0 is exercised too
+        for i in 0..(max * 2).max(1) {
+            record_punch_req(
+                "1.2.3.4".to_owned(),
+                "5.6.7.8".to_owned(),
+                format!("peer{}", i % 31),
+            )
+            .await;
+        }
+        let lock = PUNCH_REQS.lock().await;
+        assert_eq!(lock.len(), max);
+        if max > 0 {
+            // the oldest half is evicted and the newest kept
+            assert_eq!(lock.front().unwrap().to_id, format!("peer{}", max % 31));
+            assert_eq!(lock.back().unwrap().to_id, format!("peer{}", (max * 2 - 1) % 31));
+        }
     }
 }

@@ -906,3 +906,24 @@ Test: a real hbbs with a leading-space entry, a non-resolving name and a URL; fa
 the old parsing. Also: my example compose files set the API's relay server to the main
 relay (clients inherit it, and a device with a relay set ignores the server's choice);
 commented out in 62f56ae.
+
+
+### Upstream merge 2026-10-29 (873230e)
+
+Upstream master gained two commits on 2026-10-10, no release (still 1.1.16):
+#713 bounds the `PUNCH_REQS` store (VecDeque, `MAX_PUNCH_REQUESTS`, default 100000, 0
+disables; it grew without limit when one source cycled 31+ online ids) and caps peer ids at
+253 bytes (`MAX_PEER_ID_LEN`) in RegisterPk/RegisterPeer; #705 makes key loading strict
+(0600 private key, tightened if looser, 0400 accepted, missing .pub generated, a mismatched
+pair is an error; `gen_sk` and both `get_server_sk` now return `ResultType`).
+
+Merged (not rebased, as upstream-watch does). Conflicts: `PUNCH_REQS` declaration and the
+punch-request recording (took upstream's, verbatim formatting to keep future merges quiet);
+the RegisterPk block, which this fork moved into the shared `handle_register_pk` used by UDP,
+TCP and websocket - upstream's new length check was applied there; and the env-var table
+(kept both). Upstream only capped the UDP paths; the fork's TCP/websocket RegisterPeer got
+the same cap. New `tests/peer_id_len.rs` (253 accepted, 254 refused, over-long heartbeat not
+answered, over websocket) fails with either fork-side cap removed. Full suite passes,
+including upstream's `punch_reqs_bounded` and key-permission tests. Cargo.lock merged
+cleanly (`tempfile` added) and builds with `--locked`. Behaviour change for operators:
+mismatched key files now stop hbbs/hbbr from starting.
