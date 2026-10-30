@@ -123,7 +123,7 @@ container from the same image, sharing the data folder:
 
 ```yaml
   rustdesk_geo_update:
-    image: ghcr.io/yuanshi76/rustdesk-server:v0.4.0   # the same tag as hbbs
+    image: ghcr.io/yuanshi76/rustdesk-server:v0.4.1   # the same tag as hbbs
     command: rustdesk-utils geo-update --loop --out /root/geo.mmdb
     volumes:
       - ./data:/root

@@ -49,7 +49,7 @@ public key.
 | `-k <full text of hbbs's id_ed25519.pub>` | Accepts only clients whose Key is that text. **Use this on relay servers.** |
 | `-k _` or `-k -` | Makes `hbbr` load, or create, a key pair named `id_ed25519` **in its own folder**. On the main server that folder is shared with `hbbs`, so it is the same key and works. **On any other machine it is a different key, and every client is refused** with `Relay authentication failed ... invalid key` in the relay's log. Do not use it on remote relays. |
 
-Since the upstream merge of 2026-10-29 (in the release after v0.4.0), `hbbs` and
+Since v0.4.1 (the upstream merge of 2026-10-29), `hbbs` and
 `hbbr -k _` are stricter about the key files: a private key is created readable by its
 owner only and an existing one is tightened to that, a missing `id_ed25519.pub` is
 generated, and **a `id_ed25519` and `id_ed25519.pub` that do not belong together stop the

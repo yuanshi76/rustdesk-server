@@ -927,3 +927,19 @@ answered, over websocket) fails with either fork-side cap removed. Full suite pa
 including upstream's `punch_reqs_bounded` and key-permission tests. Cargo.lock merged
 cleanly (`tempfile` added) and builds with `--locked`. Behaviour change for operators:
 mismatched key files now stop hbbs/hbbr from starting.
+
+
+### Tailscale (2026-10-29)
+
+Wanted: optional Tailscale use with fallback to the servers, isolated from the rest. Found: the
+client uses exactly one ID server (`hbb_common` `get_rendezvous_servers`) and re-resolves its
+name on reconnect, so automatic fallback could only come from split DNS (server name ->
+Tailscale IP for tailnet devices), which needs the server on the tailnet (on Alibaba Cloud,
+Tailscale's 100.64.0.0/10 filter breaks the host's resolvers 100.100.2.136/138), a domain and a
+private DNS server. The user judged that too complex. Adopted instead: the client already
+connects straight to an IP (`is_ip_str`, port RELAY_PORT+1 = 21118) or to `host.domain:port`
+(`is_domain_port_str`) without any server; with direct IP access on the target, typing its
+Tailscale address goes over Tailscale, and the ID goes through the servers. No server code.
+The user tested it and it works. Their first attempt used `ID@100.x:21118`, which the client
+parses as "this ID via the ID server at that address" (`client.rs` `initialize`). Also
+confirmed there: `ID/r` forces a relay (`handle_relay_id`). Guide: docs/tailscale.md.
