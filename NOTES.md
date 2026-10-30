@@ -943,3 +943,45 @@ Tailscale address goes over Tailscale, and the ID goes through the servers. No s
 The user tested it and it works. Their first attempt used `ID@100.x:21118`, which the client
 parses as "this ID via the ID server at that address" (`client.rs` `initialize`). Also
 confirmed there: `ID/r` forces a relay (`handle_relay_id`). Guide: docs/tailscale.md.
+
+
+### Fork hygiene (2026-10-30)
+
+Every line the fork changes in an upstream file is a line an upstream change can conflict
+with; the 2026-10-29 merge conflicted partly on lines this fork had only reformatted.
+Rules:
+
+1. Fork features live in their own files and are reached from upstream's code by one-line
+   calls. Relay selection was moved out of `rendezvous_server.rs` into
+   `src/relay_select.rs` (`RelaySelector`: `configure`, `reload`, `set_live`, `live`,
+   `pick`, `console`, `HELP`); the server keeps upstream's field name `relay_servers` for
+   it. A pure move: no behaviour change, the full suite passes unchanged. The fork's
+   footprint in `rendezvous_server.rs` went from 1447 to 754 changed lines. What remains
+   there is the websocket registry (the leak fix), the hardened handshake and
+   `MUST_LOGIN`, which are woven into upstream's connection handling.
+2. Upstream's own lines are never reformatted. Five whitespace-only hunks (21 lines)
+   were restored to upstream's text. CI's format check now runs `rustfmt --check` on
+   fork-owned files only, and is enforced there (`tools/fork-footprint.sh --fmt-check`);
+   the whole-package `cargo fmt --check` was removed because it invited formatting
+   upstream's files.
+3. The footprint per upstream file is printed to the CI job summary on every run, so
+   drift is visible.
+
+### Watching upstream's default branch (2026-10-30)
+
+`upstream-watch.yaml` gained a `master-watch` job (`.github/scripts/upstream-master-watch.sh`):
+compares upstream's default branch with `UPSTREAM_COMMIT`, keeps ONE issue "Upstream master
+has commits not merged here" open while there are any, rewrites it when upstream moves,
+closes it when the base catches up. It never merges. Dry-run here with DRY_RUN=1: with the
+real base it reports nothing; with `PRETEND_BASE=a7736be` it lists exactly #713 and #705,
+i.e. it would have flagged the October fixes on the day they landed.
+
+### Backups (2026-10-30)
+
+`tools/backup/rustdesk-backup.sh` + `docs/backup.md`: dated, owner-only tar.gz of the data
+folders; SQLite copied with the online backup API and integrity-checked (a database
+written to during the backup copies cleanly, a wrecked one fails the run without pruning);
+`*.mmdb` skipped; KEEP newest; optional scp to another host. Six tests in
+`tools/backup/test_backup.py`, run in CI. Two traps found while testing: macOS tar adds
+`._` files (COPYFILE_DISABLE=1), and the copy inherits WAL mode and leaves a `-shm` beside
+it (switched to DELETE mode and the leftovers removed).

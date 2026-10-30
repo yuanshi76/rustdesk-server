@@ -27,6 +27,8 @@ jobs:
 
       - name: Install toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -42,13 +44,22 @@ jobs:
       - name: Relay-RTT tool tests
         run: python3 -m unittest discover -s tools/relay-rtt -v
 
-      # Advisory: upstream's own code does not pass either of these cleanly, so
-      # they report rather than gate. What matters is that our own additions do
-      # not make them worse.
-      - name: Format (advisory)
-        continue-on-error: true
-        run: cargo fmt -p hbbs -- --check
+      - name: Backup script tests
+        run: python3 -m unittest discover -s tools/backup -v
 
+      # Formatting is checked, and enforced, on the files this fork owns only.
+      # Upstream's own files are not rustfmt-clean, and reformatting them is what
+      # turns an upstream change into a merge conflict, so they are left alone.
+      # The footprint (how many lines of each upstream file the fork changes) goes
+      # to the job summary, so drift is visible. See NOTES.md, "Fork hygiene".
+      - name: Fork footprint, and format of fork-owned files
+        run: |
+          set -o pipefail
+          tools/fork-footprint.sh --fmt-check | tee /tmp/footprint.txt
+          { echo '### Fork footprint'; echo '```'; cat /tmp/footprint.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      # Advisory: upstream's own code does not pass this cleanly, so it reports
+      # rather than gates.
       - name: Clippy (advisory)
         continue-on-error: true
         run: cargo clippy --all-targets
