@@ -5,7 +5,8 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # release/* carries an older line that is still maintained (docs/versions.md).
+    branches: [main, 'release/**']
   pull_request:
   workflow_dispatch:
 
@@ -46,6 +47,9 @@ jobs:
 
       - name: Backup script tests
         run: python3 -m unittest discover -s tools/backup -v
+
+      - name: STUN check tool tests
+        run: python3 -m unittest discover -s tools/stun -v
 
       # Formatting is checked, and enforced, on the files this fork owns only.
       # Upstream's own files are not rustfmt-clean, and reformatting them is what

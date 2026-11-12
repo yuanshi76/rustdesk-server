@@ -29,7 +29,7 @@ services:
       - ENCRYPTED_ONLY=0     # 1 starts REJECTING clients without a matching key
       - MUST_LOGIN=N
       - WS_IDLE_TIMEOUT=90
-      # - WEBRTC=Y                                # let 1.5.x clients connect with WebRTC (docs/webrtc.md)
+      # - WEBRTC=Y                                # v0.5.0+: let 1.5.x clients use WebRTC (docs/webrtc.md)
       # --- API server ---
       - RUSTDESK_API_RUSTDESK_ID_SERVER=rustdesk.example.com:21116
       # Leave the relay server UNSET when you run more than one relay (see

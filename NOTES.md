@@ -1055,3 +1055,27 @@ answer path keeps the connection; WEBRTC=Y but no offer = exactly as before. Sev
 (offer/answer not forwarded, sink dropped after response, IP check removed, relay path
 drops connection, on regardless of setting, controller's candidates not routed) each fail a
 test. NOT run with real clients.
+
+
+### Release lines, STUN guide (2026-11-12)
+
+The user asked for v0.5.0 (WebRTC) while keeping v0.4.x usable, since WebRTC's stability
+is unproven. So: v0.5.0 is published as a GitHub **pre-release** and v0.4.2 stays "Latest";
+`release/0.4` branches from the v0.4.2 tag for 0.4.x fixes (CI now runs on `release/**`);
+compose examples on main stay on v0.4.2; docs/versions.md explains pinning, switching both
+ways (no on-disk difference between v0.4.2 and v0.5.0: database, keys, relay code
+unchanged), `docker save` for an offline copy, and rebuilding from the tag.
+
+docs/stun.md: client option `ice-servers`, comma-separated; any `stun:` entry REPLACES the
+four defaults (Cloudflare, Google, antisip, nextcloud:443); `turn://user:pass@host:port`,
+a TURN entry without credentials is dropped (webrtc-rs would otherwise fail every peer
+connection); no settings-screen field, set with `rustdesk --option ice-servers ...` on an
+installed client as admin (from client source, not run here). The UI switch is "Enable
+WebRTC P2P connection" (Settings > General > Other, `enable-webrtc`). coturn 4.18.0 tested
+locally: STUN-only `-n --stun-only --listening-port=3478 --no-tls --log-file=stdout`
+answers; `--no-cli` and `--no-dtls` are REJECTED by 4.18 (prints help, exits). TURN with
+`--lt-cred-mech --user --realm --min/max-port`: turnutils_uclient relayed 40/40 messages,
+wrong password refused (`--allow-loopback-peers` only for the loopback test). On macOS the
+colima VM does not forward published UDP ports, so STUN was tested inside the container's
+network namespace. tools/stun/stun_check.py (stdlib STUN client) + 6 tests; checked against
+the four public defaults (all answered; it flagged this Mac's proxy as two public addresses).

@@ -10,7 +10,8 @@ of through one of your relays.
 The server only passes the setup messages between the two devices: an *offer*, an
 *answer*, and *ICE candidates*. RustDesk's own server supports this in its paid Pro
 version; the open-source server does not. This fork adds it as an **optional module, off
-by default**.
+by default**, from **v0.5.0**. v0.5.x is a preview line; v0.4.x stays the stable one
+([versions.md](versions.md)).
 
 ## What happens when it is off, or does not work
 
@@ -25,7 +26,9 @@ a connection where WebRTC cannot be used still works the usual way:
 
 ## Turn it on
 
-**1. On the main server**, add to `hbbs`'s environment and recreate the containers:
+**1. On the main server**, use a v0.5.x image (`ghcr.io/yuanshi76/rustdesk-server:v0.5.0`,
+or the `-s6` / `-s6-api` variant you run), add to `hbbs`'s environment, and recreate the
+containers:
 
 ```yaml
 environment:
@@ -35,9 +38,9 @@ environment:
 The start-up log says `WEBRTC=Y`.
 
 **2. On the devices you connect *from***: WebRTC is **off by default** in the client when
-it uses your own server (as UDP and IPv6 hole punching are). Turn it on in the client's
-settings; the option is stored as `enable-webrtc`. The exact label in the settings screen
-has not been checked here.
+it uses your own server (as UDP and IPv6 hole punching are). Turn on **"Enable WebRTC P2P
+connection"** in the client's settings (Settings, General, in the Other section; the option
+is stored as `enable-webrtc`).
 
 Both devices need client **1.5.0 or later**. The device you connect *to* needs no setting.
 
@@ -66,12 +69,9 @@ is in the connecting client's log: its "Hole Punched" line names the method.
 
 ## STUN and TURN servers
 
-The clients use public STUN servers by default (Cloudflare, Google, and two others).
-Some of them may be unreachable from mainland China. If WebRTC seldom succeeds there, run a
-STUN server of your own (for example `coturn`) on one of your machines and set it in the
-clients' `ice-servers` option. A TURN server (`turn://user:password@host:port`) also lets
-WebRTC work when nothing direct does, but then it is a relay too, and your own `hbbr` relays
-already do that job. Neither is part of this project.
+WebRTC needs a STUN server that the devices can reach. The clients use four public ones by
+default; you can name others, or run your own on one of your servers. How, and a tool to
+test them from each place: **[stun.md](stun.md)**.
 
 ## Limits
 
