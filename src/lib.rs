@@ -8,4 +8,5 @@ pub mod geo_update;
 mod relay_geo;
 mod relay_routes;
 mod relay_select;
+mod webrtc_signal;
 mod version;

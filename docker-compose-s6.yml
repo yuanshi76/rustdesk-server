@@ -35,6 +35,7 @@ services:
       # - RELAY_LOCATIONS=/data/relay_locations.txt
       - MUST_LOGIN=N
       - WS_IDLE_TIMEOUT=90
+      # - WEBRTC=Y                                # let 1.5.x clients connect with WebRTC (docs/webrtc.md)
       # - RUSTDESK_API_JWT_KEY=<shared with api>   # only meaningful with MUST_LOGIN=Y
     ports:
       - "21114:21114"       # rustdesk-api, published through this namespace

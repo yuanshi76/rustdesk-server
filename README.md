@@ -50,6 +50,7 @@ More detail, by question:
 |---|---|
 | How to measure latency to your relays, step by step | [docs/measuring-latency.md](docs/measuring-latency.md) |
 | How to send each device to the nearest relay by where it is, wherever it travels | [docs/geo-routing.md](docs/geo-routing.md) |
+| How to let 1.5.x clients connect directly with WebRTC (optional) | [docs/webrtc.md](docs/webrtc.md) |
 | How to back up the server (keys, peer table, API database) automatically | [docs/backup.md](docs/backup.md) |
 | How to connect directly over Tailscale, and fall back to the servers | [docs/tailscale.md](docs/tailscale.md) |
 | How several relays fit together: machines, ports, keys, and the API server | [docs/multi-relay-architecture.md](docs/multi-relay-architecture.md) |

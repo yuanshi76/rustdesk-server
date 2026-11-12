@@ -30,6 +30,7 @@ services:
       # Close a websocket that has sent nothing for this long, the Pong
       # answering the server's Ping included. A backstop, not a fix.
       - WS_IDLE_TIMEOUT=90
+      # - WEBRTC=Y                                # let 1.5.x clients connect with WebRTC (docs/webrtc.md)
       # - MUST_LOGIN=Y                            # refuse a client with no login token
       # Optional: nearest relay by where a device is (docs/geo-routing.md). Needs the
       # database file and relay_locations.txt in ./data, and an updater container if you

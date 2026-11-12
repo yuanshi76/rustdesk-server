@@ -1020,3 +1020,38 @@ substituting its pick in either message) fail it. Not run against a real 1.5.3 c
 Not taken up: client 1.5.0 WebRTC signalling and key exchange v1 need hbb_common past
 upstream's pin (69cea8d); neither upstream's server nor this fork forwards them, and clients
 fall back. Client 1.5.1 warns on a non-local http:// API server (the user's is http).
+
+
+### Optional WebRTC signalling (2026-11-12)
+
+Client 1.5.0 races a WebRTC transport (webrtc-rs: ICE/STUN/DTLS). hbbs carries signalling
+only: offer PunchHoleRequest.12 -> PunchHole.10; answer PunchHoleSent.8 ->
+PunchHoleResponse.12 (RelayResponse.12 rides along, the message is forwarded whole and
+rust-protobuf 3 keeps unknown fields); ICE candidates RendezvousMessage.29 IceCandidate{id 1,
+socket_addr 2, session_key 3, candidate 4}. Read from the client's source (client.rs,
+rendezvous_mediator.rs, hbb_common webrtc.rs). The contracts that matter: the controller
+uses ONE connection for request, early candidates, response and the rest of the trickle
+("never reconnect this socket: its address is the return route ... resolves the echo
+through tcp_punch"), so hbbs must not drop its sink after the response and must not close
+it on an IceCandidate; the peer sends its candidates on a separate encrypted TCP connection,
+naming the controller by the mangled address from PunchHole, and expects it kept open.
+Upstream's OSS server has none of this (hbb_common pin 69cea8d predates the fields); Pro
+1.8.7 "add Webrtc support". The client disables WebRTC by default for non-public servers.
+
+Built as `src/webrtc_signal.rs` (`WebRtcSignal`), off unless `WEBRTC=Y`. hbb_common is NOT
+moved (145 commits behind its main): the fields are read/written as protobuf unknown
+fields; IceCandidate is parsed via `well_known_types::Empty` (everything lands in unknown
+fields). Hooks in rendezvous_server.rs: offer in `handle_tcp_punch_hole_request`, answer in
+`handle_hole_sent`, `send_to_tcp_keep` (sink re-inserted only while the attempt lasts) for
+the response and for RelayResponse-with-answer, ICE in `handle_tcp` before the union match,
+`forget` on connection close, `webrtc` console command. Limits: candidates only within an
+offered attempt (60 s), toward the controller only from the peer's IP, 128 per direction,
+4096 attempts. FetchLocalAddr (same LAN) has no offer field, so no WebRTC there.
+
+Tests: 4 unit tests and tests/webrtc_signal.rs (real hbbs with a key; desktop-style
+encrypted TCP controller, websocket peer): on = offer, answer, candidates both ways after
+the response, stranger dropped; off = the punch works, nothing new passes; RelayResponse
+answer path keeps the connection; WEBRTC=Y but no offer = exactly as before. Seven mutations
+(offer/answer not forwarded, sink dropped after response, IP check removed, relay path
+drops connection, on regardless of setting, controller's candidates not routed) each fail a
+test. NOT run with real clients.

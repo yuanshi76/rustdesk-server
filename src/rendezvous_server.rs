@@ -2,6 +2,7 @@ use crate::common::*;
 use crate::jwt;
 use crate::peer::*;
 use crate::relay_select::RelaySelector;
+use crate::webrtc_signal::{IceRoute, WebRtcSignal};
 use hbb_common::{
     allow_err, bail,
     bytes::{Bytes, BytesMut},
@@ -234,6 +235,8 @@ struct Inner {
 #[derive(Clone)]
 pub struct RendezvousServer {
     tcp_punch: Arc<Mutex<HashMap<SocketAddr, Sink>>>,
+    /// Optional WebRTC signalling (WEBRTC=Y). See `webrtc_signal`.
+    webrtc: WebRtcSignal,
     pm: PeerMap,
     tx: Sender,
     /// The healthy relays and everything this fork uses to choose among them.
@@ -298,6 +301,7 @@ impl RendezvousServer {
             tx: tx.clone(),
             relay_servers: Default::default(),
             relay_servers0: Default::default(),
+            webrtc: WebRtcSignal::from_env(),
             rendezvous_servers: Arc::new(rendezvous_servers),
             inner: Arc::new(Inner {
                 serial,
@@ -633,6 +637,9 @@ impl RendezvousServer {
         ws_conn: Option<&WsPeer>,
     ) -> bool {
         if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(bytes) {
+            if let Some(ice) = self.webrtc.ice(&msg_in) {
+                return self.handle_ice_candidate(ice, addr).await || ws;
+            }
             match msg_in.union {
                 Some(rendezvous_message::Union::PunchHoleRequest(ph)) => {
                     // The reply may arrive on a different connection, so the
@@ -700,8 +707,14 @@ impl RendezvousServer {
                             rr.relay_server = self.get_relay_server(addr.ip(), addr_b.ip());
                         }
                     }
+                    let webrtc = self.webrtc.relay_response_has_answer(&rr)
+                        && self.webrtc.keeps_route(addr_b);
                     msg_out.set_relay_response(rr);
-                    allow_err!(self.send_to_tcp_sync(msg_out, addr_b).await);
+                    if webrtc {
+                        self.send_to_tcp_keep(msg_out, addr_b).await;
+                    } else {
+                        allow_err!(self.send_to_tcp_sync(msg_out, addr_b).await);
+                    }
                 }
                 Some(rendezvous_message::Union::PunchHoleSent(phs)) => {
                     allow_err!(self.handle_hole_sent(phs, addr, None).await);
@@ -926,6 +939,7 @@ impl RendezvousServer {
     ) -> ResultType<()> {
         // punch hole sent from B, tell A that B is ready to be connected
         let addr_a = AddrMangle::decode(&phs.socket_addr);
+        let webrtc_answer = self.webrtc.answer(&phs);
         log::debug!(
             "{} punch hole response to {:?} from {:?}",
             if socket.is_none() { "TCP" } else { "UDP" },
@@ -942,9 +956,14 @@ impl RendezvousServer {
         if let Ok(t) = phs.nat_type.enum_value() {
             p.set_nat_type(t);
         }
+        if let Some(answer) = webrtc_answer {
+            self.webrtc.forward_answer(&mut p, answer);
+        }
         msg_out.set_punch_hole_response(p);
         if let Some(socket) = socket {
             socket.send(&msg_out, addr_a).await?;
+        } else if self.webrtc.keeps_route(addr_a) {
+            self.send_to_tcp_keep(msg_out, addr_a).await;
         } else {
             self.send_to_tcp(msg_out, addr_a).await;
         }
@@ -1213,6 +1232,50 @@ impl RendezvousServer {
         Ok(())
     }
 
+    /// Like `send_to_tcp_sync`, but the punch connection stays usable afterwards:
+    /// a controller in a WebRTC attempt still has candidates coming to it. The sink
+    /// goes back only while the attempt lasts, so a connection that closed in the
+    /// meantime is not kept.
+    async fn send_to_tcp_keep(&mut self, msg: RendezvousMessage, addr: SocketAddr) {
+        if self.push_to_ws_peer(addr, &msg) {
+            return;
+        }
+        let key = try_into_v4(addr);
+        let mut sink = self.tcp_punch.lock().await.remove(&key);
+        Self::send_to_sink(&mut sink, msg).await;
+        if let Some(sink) = sink {
+            if self.webrtc.keeps_route(addr) {
+                self.tcp_punch.lock().await.entry(key).or_insert(sink);
+            }
+        }
+    }
+
+    /// Route an ICE candidate (optional WebRTC signalling). Returns whether the
+    /// connection it came on should stay open: a controller's punch connection and
+    /// a peer's candidate connection both carry more than one.
+    async fn handle_ice_candidate(
+        &mut self,
+        ice: crate::webrtc_signal::Ice,
+        addr: SocketAddr,
+    ) -> bool {
+        match self.webrtc.route(ice, addr) {
+            IceRoute::ToPeer(peer, msg) => {
+                if !self.push_to_ws_peer(peer, &msg) {
+                    self.tx.send(Data::Msg(msg.into(), peer)).ok();
+                }
+                true
+            }
+            IceRoute::ToController(controller, msg) => {
+                self.send_to_tcp_keep(msg, controller).await;
+                true
+            }
+            IceRoute::Drop(why) => {
+                log::debug!("dropped an ICE candidate from {addr}: {why}");
+                false
+            }
+        }
+    }
+
     #[inline]
     async fn handle_tcp_punch_hole_request(
         &mut self,
@@ -1221,7 +1284,13 @@ impl RendezvousServer {
         key: &str,
         ws: bool,
     ) -> ResultType<()> {
-        let (msg, to_addr) = self.handle_punch_hole_request(addr, ph, key, ws).await?;
+        let webrtc_offer = self.webrtc.offer(&ph);
+        let peer_id = ph.id.clone();
+        let (mut msg, to_addr) = self.handle_punch_hole_request(addr, ph, key, ws).await?;
+        if let (Some(offer), Some(peer_addr)) = (webrtc_offer, to_addr) {
+            self.webrtc
+                .forward_offer(&mut msg, offer, addr, &peer_id, peer_addr);
+        }
         if let Some(addr) = to_addr {
             if !self.push_to_ws_peer(addr, &msg) {
                 self.tx.send(Data::Msg(msg.into(), addr))?;
@@ -1301,6 +1370,9 @@ impl RendezvousServer {
         if let Some(res) = self.relay_servers.console(cmd) {
             return res;
         }
+        if let Some(res) = self.webrtc.console(cmd) {
+            return res;
+        }
         let mut res = "".to_owned();
         let mut fds = cmd.trim().split(' ');
         match fds.next() {
@@ -1317,7 +1389,7 @@ impl RendezvousServer {
                     "must-login(ml) [Y|N]",
                     "ws-peers(wp)"
                 );
-                for line in RelaySelector::HELP {
+                for line in RelaySelector::HELP.iter().chain(WebRtcSignal::HELP) {
                     res.push_str(line);
                     res.push('\n');
                 }
@@ -1739,6 +1811,7 @@ impl RendezvousServer {
         if sink.is_none() {
             self.tcp_punch.lock().await.remove(&try_into_v4(addr));
         }
+        self.webrtc.forget(addr);
         log::debug!("Tcp connection from {:?} closed", addr);
         Ok(())
     }
