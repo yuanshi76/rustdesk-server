@@ -1023,3 +1023,76 @@ async fn a_relay_written_with_a_space_or_not_resolving_yet_is_not_lost_and_a_bad
         "{live}"
     );
 }
+
+/// Client 1.5.3 (rustdesk#16858): the controlled peer remembers the relays it put in
+/// its own punch replies and refuses a RequestRelay that names any other. So hbbs must
+/// carry the relay the peer reported to the controller unchanged, and forward the
+/// controller's RequestRelay unchanged, even when that relay is not the one hbbs chose
+/// (a peer with its own `relay-server` option reports that one instead).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_relay_a_peer_reports_reaches_the_controller_and_comes_back_unchanged() {
+    const PORT: i32 = 20396;
+    const UUID: &str = "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12";
+    let (r1, r2, r3) = (
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+        FakeRelay::start().await,
+    );
+    let hbbs = start_hbbs(PORT, "relay-echo", &[&r1.addr, &r2.addr, &r3.addr], &[]);
+    wait_for_port(PORT + 2).await;
+    let mut pair = Pair::connect(PORT + 2, &hbbs.pk).await;
+
+    // A asks for B; hbbs picks a relay and tells B.
+    let mut msg = RendezvousMessage::new();
+    msg.set_punch_hole_request(PunchHoleRequest {
+        id: pair.id.clone(),
+        licence_key: pair.pk.clone(),
+        ..Default::default()
+    });
+    send(&mut pair.a, msg).await;
+    let (chosen, a_addr) = match recv(&mut pair.b, "PunchHole at B").await.union {
+        Some(rendezvous_message::Union::PunchHole(ph)) => (ph.relay_server, ph.socket_addr),
+        other => panic!("expected PunchHole at B, got {other:?}"),
+    };
+    // B has its own relay configured, so it reports that one, not hbbs's choice.
+    let own = [&r1.addr, &r2.addr, &r3.addr]
+        .into_iter()
+        .find(|r| **r != chosen)
+        .unwrap()
+        .clone();
+    let mut msg = RendezvousMessage::new();
+    msg.set_punch_hole_sent(PunchHoleSent {
+        socket_addr: a_addr,
+        id: pair.id.clone(),
+        relay_server: own.clone(),
+        version: "1.5.3".to_owned(),
+        ..Default::default()
+    });
+    send(&mut pair.b, msg).await;
+    let told_a = match recv(&mut pair.a, "PunchHoleResponse at A").await.union {
+        Some(rendezvous_message::Union::PunchHoleResponse(r)) => r.relay_server,
+        other => panic!("expected PunchHoleResponse at A, got {other:?}"),
+    };
+    assert_eq!(told_a, own, "hbbs replaced the relay B reported");
+
+    // A asks for that relay; B must get exactly what it reported.
+    let mut msg = RendezvousMessage::new();
+    msg.set_request_relay(RequestRelay {
+        id: pair.id.clone(),
+        uuid: UUID.to_owned(),
+        relay_server: told_a,
+        licence_key: pair.pk.clone(),
+        ..Default::default()
+    });
+    send(&mut pair.a, msg).await;
+    match recv(&mut pair.b, "RequestRelay at B").await.union {
+        Some(rendezvous_message::Union::RequestRelay(rf)) => {
+            assert_eq!(
+                rf.relay_server, own,
+                "hbbs rewrote the relay in RequestRelay"
+            );
+            assert_eq!(rf.uuid, UUID);
+        }
+        other => panic!("expected RequestRelay at B, got {other:?}"),
+    }
+}

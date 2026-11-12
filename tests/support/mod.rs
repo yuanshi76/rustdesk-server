@@ -67,7 +67,7 @@ pub async fn connect(ws_port: i32, real_ip: Option<&str>) -> Ws {
 
 pub async fn send(ws: &mut Ws, msg: RendezvousMessage) {
     use hbb_common::futures_util::SinkExt;
-    ws.send(WsMessage::Binary(msg.write_to_bytes().unwrap()))
+    ws.send(WsMessage::Binary(msg.write_to_bytes().unwrap().into()))
         .await
         .expect("send");
 }

@@ -71,7 +71,7 @@ async fn register_and_close(i: usize) -> Result<(), String> {
         pk: Bytes::from(format!("pk-{i}")),
         ..Default::default()
     });
-    ws.send(WsMessage::Binary(msg.write_to_bytes().unwrap()))
+    ws.send(WsMessage::Binary(msg.write_to_bytes().unwrap().into()))
         .await
         .map_err(|e| format!("send: {e}"))?;
 

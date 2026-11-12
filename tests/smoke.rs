@@ -164,9 +164,14 @@ async fn rendezvous_handshake_end_to_end() {
     }
 
     // --- relayed: A asks for a relay to B ---
+    // A real client always sends the session's uuid and the relay; since upstream
+    // 44de977, hbbs drops a RequestRelay without a well-formed uuid.
+    const UUID: &str = "e4c181d0-41c7-4ae6-8ef0-36581b6b2b12";
     let mut msg = RendezvousMessage::new();
     msg.set_request_relay(RequestRelay {
         id: "smoke-peer-b".to_owned(),
+        uuid: UUID.to_owned(),
+        relay_server: format!("127.0.0.1:{RELAY_PORT}"),
         ..Default::default()
     });
     send(&mut a, msg).await;
@@ -179,6 +184,7 @@ async fn rendezvous_handshake_end_to_end() {
     let mut msg = RendezvousMessage::new();
     let mut rr = RelayResponse {
         socket_addr: a_mangled,
+        uuid: UUID.to_owned(),
         version: "1.4.1".to_owned(),
         relay_server: format!("127.0.0.1:{RELAY_PORT}"),
         ..Default::default()

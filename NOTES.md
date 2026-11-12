@@ -985,3 +985,38 @@ written to during the backup copies cleanly, a wrecked one fails the run without
 `tools/backup/test_backup.py`, run in CI. Two traps found while testing: macOS tar adds
 `._` files (COPYFILE_DISABLE=1), and the copy inherits WAL mode and leaves a `-shm` beside
 it (switched to DELETE mode and the leftovers removed).
+
+
+### Upstream merge 2026-11-11 (680b603), and client 1.5.x
+
+Found by the master watcher (issue #5). Eleven upstream commits, all hardening:
+relay uuid validation in hbbs (RequestRelay/RelayResponse with an empty, >128-byte or
+non `[A-Za-z0-9_-]` uuid closes the connection; the empty RelayResponse ack is allowed);
+`MAX_MESSAGE_KB` (default 64) bounds frames on 21115/21116/21118, websocket buffers 8 KiB;
+websocket upgrade handshake timeout; console replies written completely with a 1 s
+deadline; hbbr: stalled relay writes bounded, waiter expiry after pair-id reuse, relay
+request bounded to 128 KiB before pairing, IPv4-mapped clients matched against the
+blacklist/blocklist, forwarded websocket IPs keep the connection port. Upstream also moved
+tokio-tungstenite/tungstenite 0.17 -> 0.29 (rustdesk-org forks, `[patch.crates-io]`).
+
+Conflicts (5): the constants block next to MUST_LOGIN/WS idle (kept both), `send_to_sink`
+(kept the fork's `Sink::send`, which encrypts), a doc line beside `key_exchange_phase1`
+(kept both), the TCP listener (kept the fork's encrypted handshake loop and added
+upstream's `set_max_packet_length(*MAX_MESSAGE)`), and the env table (kept both). The
+library upgrade broke only `Message::Ping/Binary` taking `Bytes` (2 sites in the fork's
+Sink, 2 in tests). Cargo.lock merged consistently; `--locked` builds.
+
+`tests/smoke.rs` sent a RequestRelay with no uuid, which no real client does; the new
+validation dropped it. The test now sends a realistic uuid and relay.
+
+Client 1.5.3 (rustdesk#16858): the controlled peer accepts a RequestRelay only for a relay
+it put in its own punch replies in the last 10 minutes, or its configured relay. hbbs picks
+once (PunchHole to B), echoes B's PunchHoleSent relay to A, and forwards RequestRelay
+unchanged, so geo routing stays compatible. Locked in by
+`the_relay_a_peer_reports_reaches_the_controller_and_comes_back_unchanged`: B reports a relay
+other than hbbs's choice, A must get it and B must get it back; two mutations (hbbs
+substituting its pick in either message) fail it. Not run against a real 1.5.3 client.
+
+Not taken up: client 1.5.0 WebRTC signalling and key exchange v1 need hbb_common past
+upstream's pin (69cea8d); neither upstream's server nor this fork forwards them, and clients
+fall back. Client 1.5.1 warns on a non-local http:// API server (the user's is http).
