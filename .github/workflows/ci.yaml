@@ -5,7 +5,8 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # release/* carries an older line that is still maintained (docs/versions.md on main).
+    branches: [main, 'release/**']
   pull_request:
   workflow_dispatch:
 
