@@ -3,7 +3,7 @@
 # Multi-arch: binaries are expected at bin/<TARGETARCH>/, built outside this
 # Dockerfile.
 # Root certificates, so that `rustdesk-utils geo-update` can check who it is talking to.
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS certs
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS certs
 RUN apk add --no-cache ca-certificates
 
 FROM scratch

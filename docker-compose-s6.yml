@@ -20,7 +20,7 @@
 services:
   rustdesk-server:
     container_name: rustdesk_server
-    image: ghcr.io/yuanshi76/rustdesk-server-s6:v0.4.2
+    image: ghcr.io/yuanshi76/rustdesk-server-s6:v0.4.3
     environment:
       - RELAY=rustdesk.example.com:21117
       # 0 is the default and matches the classic scheme above: a key pair exists
@@ -53,7 +53,7 @@ services:
   # Drop this service if you do not use the API server.
   rustdesk-api:
     container_name: rustdesk-api
-    image: lejianwen/rustdesk-api:latest    # pin this too
+    image: lejianwen/rustdesk-api:v2.7      # the release the s6-api image is built on
     environment:
       - TZ=UTC
       - RUSTDESK_API_RUSTDESK_ID_SERVER=rustdesk.example.com:21116
