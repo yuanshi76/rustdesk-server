@@ -1112,3 +1112,8 @@ the four public defaults (all answered; it flagged this Mac's proxy as two publi
   upstream-watch (one issue while unreviewed advisories exist, closed when none) and a
   report step in CI (job summary, NO_ISSUE=1). cargo-audit via taiki-e/install-action.
 - Release lines: the same changes go to release/0.4 (v0.4.3) and main (v0.5.1).
+- s6-overlay 3.2.3 deprecates declaring the `user` bundle inside /etc/s6-overlay/s6-rc.d
+  (it logged "defining user bundles in /etc/s6-overlay/s6-rc.d is deprecated"). Moved to
+  /etc/s6-overlay/user-bundles.d/user/contents.d in rootfs and rootfs-api; checked by
+  overlaying it on the trial image: all services up, warning gone. "Failed to get machine
+  uid" in the s6 logs is pre-existing (v0.4.2 logs it too): no /etc/machine-id in a container.
