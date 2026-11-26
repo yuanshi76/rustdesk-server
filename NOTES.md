@@ -1079,3 +1079,36 @@ wrong password refused (`--allow-loopback-peers` only for the loopback test). On
 colima VM does not forward published UDP ports, so STUN was tested inside the container's
 network namespace. tools/stun/stun_check.py (stdlib STUN client) + 6 tests; checked against
 the four public defaults (all answered; it flagged this Mac's proxy as two public addresses).
+
+
+### Maintenance 2026-11-26 (v0.4.3, v0.5.1)
+
+- Base images: the build stages used alpine:3.20, end of life 2026-04-01; the images copy
+  their CA bundle (used by geo-update's TLS) from that stage, so it had stopped receiving
+  root-certificate updates. Now alpine:3.24 (supported to 2028-06). s6-overlay 3.2.0.0 ->
+  3.2.3.2. The s6-api image was built on `lejianwen/rustdesk-api:latest`; now pinned to
+  v2.7 (its latest release) so rebuilds are repeatable; compose examples pinned the same.
+- Dependencies: cargo-audit listed 45 advisories. Updated within the same version line,
+  one named package at a time, checking the lockfile diff each time (the old
+  signature-merge trap did not recur): openssl 0.10.68->0.10.82 (+openssl-sys),
+  rustls 0.23.42->0.23.46, rustls-webpki 0.103.13->0.103.17, webpki-roots and
+  webpki-root-certs 1.0.9->1.0.12, zstd 0.13.6 / zstd-safe 7.4.2 / zstd-sys 2.2.0,
+  crossbeam-epoch 0.9.21, url 2.5.9 (+form_urlencoded), pkg-config. `cargo update -p X`
+  stopped rustls at 0.23.43 and left url alone because they share dependencies with other
+  packages; `--precise` moved them with one extra helper each. 22 fixed, 0 new; the 23
+  left need major upgrades upstream chose (sqlx 0.6 with bundled SQLite CVEs, reqwest 0.11
+  with rustls 0.21 / webpki 0.101, axum 0.5 with h2 0.3). Listed with reasons in
+  .github/audit-known.txt (keyed by id, library AND version: keyed without version, a
+  vulnerable new copy hid behind a reviewed old one; caught by a dry run on the old
+  lockfile, which then flagged exactly the 22).
+- GitHub Actions: every run warned that Node 20 is deprecated. checkout v4->v7,
+  download-artifact v4->v8, upload-artifact v4->v7, build-push v6->v7, login/buildx/qemu
+  v3->v4, action-gh-release v2->v3 (release notes read: Node 24 runtime; buildx v4
+  removed inputs this repo does not use; download-artifact v8 errors on hash mismatch and
+  skips unzipping non-zip content, neither affecting zipped uploads; checkout v6 keeps
+  credentials in a separate file, which the monthly keepalive push relies on and which is
+  meant to be transparent).
+- Dependency audit: `.github/scripts/dependency-audit.sh` + daily `audit` job in
+  upstream-watch (one issue while unreviewed advisories exist, closed when none) and a
+  report step in CI (job summary, NO_ISSUE=1). cargo-audit via taiki-e/install-action.
+- Release lines: the same changes go to release/0.4 (v0.4.3) and main (v0.5.1).

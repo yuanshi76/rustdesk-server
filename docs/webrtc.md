@@ -26,7 +26,7 @@ a connection where WebRTC cannot be used still works the usual way:
 
 ## Turn it on
 
-**1. On the main server**, use a v0.5.x image (`ghcr.io/yuanshi76/rustdesk-server:v0.5.0`,
+**1. On the main server**, use a v0.5.x image (`ghcr.io/yuanshi76/rustdesk-server:v0.5.1`,
 or the `-s6` / `-s6-api` variant you run), add to `hbbs`'s environment, and recreate the
 containers:
 
