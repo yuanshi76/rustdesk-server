@@ -5,9 +5,9 @@
 # at bin/<TARGETARCH>/, i.e. bin/amd64/hbbs and bin/arm64/hbbs.
 
 # Fetched on the build host, not under emulation.
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS s6
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS s6
 ARG TARGETARCH
-ARG S6_OVERLAY_VERSION=3.2.0.0
+ARG S6_OVERLAY_VERSION=3.2.3.2
 RUN apk add --no-cache ca-certificates
 RUN set -eux; \
     case "$TARGETARCH" in \

@@ -5,13 +5,14 @@
 #
 # Build context is ./docker, same as the default image.
 
-# Declared before the first FROM so it can be used in one. Override with
-# --build-arg API_IMAGE=... to pin a digest.
-ARG API_IMAGE=lejianwen/rustdesk-api:latest
+# Declared before the first FROM so it can be used in one. A named release, not
+# `latest`, so a rebuild gets the same API server. Override with
+# --build-arg API_IMAGE=... (a newer release, or a digest).
+ARG API_IMAGE=lejianwen/rustdesk-api:v2.7
 
-FROM --platform=$BUILDPLATFORM alpine:3.20 AS s6
+FROM --platform=$BUILDPLATFORM alpine:3.24 AS s6
 ARG TARGETARCH
-ARG S6_OVERLAY_VERSION=3.2.0.0
+ARG S6_OVERLAY_VERSION=3.2.3.2
 RUN set -eux; \
     case "$TARGETARCH" in \
       amd64) s6_arch=x86_64 ;; \
