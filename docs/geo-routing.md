@@ -103,8 +103,9 @@ damaged download is discarded and the old file keeps being used. It remembers wh
 month it has in `geo.mmdb.version` beside the database. `hbbs` picks up the new file
 within a few seconds.
 
-It checks the certificate of `download.db-ip.com` (the images include root
-certificates for this).
+It checks the certificate of `download.db-ip.com` with a current TLS library (rustls
+0.23) against Mozilla's list of trusted root certificates, which is built into the
+program, so it does not depend on certificate files in the image.
 
 **s6 images** (`rustdesk-server-s6`, `docker-compose-s6.yml`): just turn it on. This
 also saves you from setting `GEO_DB`, which defaults to `/data/geo.mmdb`:

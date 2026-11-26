@@ -2,7 +2,8 @@
 #
 # Multi-arch: binaries are expected at bin/<TARGETARCH>/, built outside this
 # Dockerfile.
-# Root certificates, so that `rustdesk-utils geo-update` can check who it is talking to.
+# Root certificates for upstream's software-update check in hbbs, which uses the
+# system's certificate file. The geo database updater carries its own root list.
 FROM --platform=$BUILDPLATFORM alpine:3.24 AS certs
 RUN apk add --no-cache ca-certificates
 

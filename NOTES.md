@@ -1124,3 +1124,27 @@ the four public defaults (all answered; it flagged this Mac's proxy as two publi
   draft once. Tested on a temporary branch with stand-in binaries under the real artifact
   names: one draft, both files, each zip holding its own architecture; the test draft and
   branch were deleted, as was the stray v0.4.3 draft (id 459437115, no files).
+
+
+### geo-update on the current TLS library (2026-11-26)
+
+`rustdesk-utils geo-update` downloaded with upstream's `reqwest` 0.11, i.e. rustls 0.21 and
+rustls-webpki 0.101 (advisories: distrusted intermediates accepted, name-constraint bugs,
+CRL panic). Now `ureq` 3.5.2 with only its `rustls` feature: rustls 0.23.46 (already in
+the tree) and Mozilla's roots compiled in (webpki-roots 1.0.12), so the updater no longer
+reads the image's CA file (still shipped: upstream's software-update check in hbbs uses
+reqwest with native roots). reqwest and rustls 0.21 stay in the build because upstream's
+code uses them; the audit list is unchanged.
+
+Lockfile: `cargo add ureq` re-resolved and REMOVED signature 1.5.0 again (ed25519 1.5.0
+needs it). Restored the lock and inserted only the four new entries cargo produced (ureq,
+ureq-proto, utf8-zero, base64 0.23.1) next to existing anchors, plus "ureq" in hbbs's
+dependency list: 41 lines added, none removed; `--locked` builds. A first attempt that
+re-sorted all entries swapped the two tokio-socks entries (cargo orders "0.5.2-1" as a
+pre-release, before 0.5.2): content-identical but a noisy diff, so it was redone without
+re-sorting.
+
+Checked against the internet with the built tool: expired, wrong.host, self-signed and
+untrusted-root.badssl.com refused with the matching certificate error; valid badssl.com
+and download.db-ip.com connect; the real 2026-11 City Lite file downloaded, validated and
+installed. Updater tests (plain HTTP, local server) and the geo routing tests pass.

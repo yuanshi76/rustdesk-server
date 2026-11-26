@@ -27,8 +27,9 @@ FROM busybox:stable
 ARG TARGETARCH
 
 COPY --from=s6 /s6root /
-# Root certificates, so that rustdesk-utils geo-update can check who it is talking to.
-# (This base has none, and busybox wget does not check certificates at all.)
+# Root certificates for upstream's software-update check in hbbs, which uses the
+# system's certificate file. (This base has none.) The geo database updater does not
+# need them: it carries Mozilla's root list itself.
 COPY --from=s6 /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN ln -s /run /var/run
 

@@ -167,21 +167,32 @@ fn fetch_month(o: &Options, month: &str) -> Result<Fetched, String> {
         "{}/dbip-city-lite-{month}.mmdb.gz",
         o.base_url.trim_end_matches('/')
     );
-    let client = reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(1800))
+    // ureq on rustls 0.23. Certificates are checked against Mozilla's root list,
+    // compiled in (webpki-roots), so this does not depend on a certificate file in
+    // the image; the list is kept current by dependency updates, and the daily
+    // dependency audit flags a stale one. HTTP status codes are handled below
+    // rather than returned as errors, so that 404 can mean "not published yet".
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_connect(Some(Duration::from_secs(30)))
+        .timeout_global(Some(Duration::from_secs(1800)))
         .user_agent(concat!("rustdesk-utils/", env!("CARGO_PKG_VERSION")))
+        .http_status_as_error(false)
         .build()
-        .map_err(|e| format!("cannot start an HTTP client: {e}"))?;
-    let resp = client.get(&url).send().map_err(|e| format!("{url}: {e}"))?;
+        .into();
+    let resp = agent.get(&url).call().map_err(|e| format!("{url}: {e}"))?;
     let status = resp.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
+    if status.as_u16() == 404 {
         return Ok(Fetched::NotPublished);
     }
     if !status.is_success() {
         return Err(format!("{url}: HTTP {status}"));
     }
-    if let Some(len) = resp.content_length() {
+    let content_length = resp
+        .headers()
+        .get("content-length")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok());
+    if let Some(len) = content_length {
         if len > o.max_download_bytes {
             return Err(format!(
                 "{url}: {len} bytes is larger than the {} byte limit",
@@ -198,7 +209,7 @@ fn fetch_month(o: &Options, month: &str) -> Result<Fetched, String> {
     let tmp = TempFile(tmp_path);
     {
         let compressed = Capped {
-            inner: resp,
+            inner: resp.into_body().into_reader(),
             left: o.max_download_bytes,
             what: "the download",
         };
