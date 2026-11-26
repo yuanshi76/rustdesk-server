@@ -1117,3 +1117,10 @@ the four public defaults (all answered; it flagged this Mac's proxy as two publi
   /etc/s6-overlay/user-bundles.d/user/contents.d in rootfs and rootfs-api; checked by
   overlaying it on the trial image: all services up, warning gone. "Failed to get machine
   uid" in the s6 logs is pre-existing (v0.4.2 logs it too): no /etc/machine-id in a container.
+- Release-draft race (fixed after v0.4.3): build.yaml's `release` job ran once per
+  architecture in parallel; each looked for a draft with the tag, found none and created
+  one, so v0.4.3 got a second, empty draft (both jobs started 13:07:17). It is one job
+  now: downloads both artifacts (`pattern: binaries-linux-*`), packs both zips, creates the
+  draft once. Tested on a temporary branch with stand-in binaries under the real artifact
+  names: one draft, both files, each zip holding its own architecture; the test draft and
+  branch were deleted, as was the stray v0.4.3 draft (id 459437115, no files).

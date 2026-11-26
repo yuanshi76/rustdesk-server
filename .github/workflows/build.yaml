@@ -232,29 +232,36 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ steps.tags.outputs.version }}
 
+  # ONE job, not one per architecture. Two parallel jobs each looked for a draft
+  # with this tag, found none, and each created one: v0.4.3 got two drafts, one
+  # empty. A single job creates the draft once, with both files.
   release:
     name: Draft release
     needs: build
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [amd64, arm64]
     steps:
       - name: Download binaries
         uses: actions/download-artifact@v8
         with:
-          name: binaries-linux-${{ matrix.arch }}
-          path: ${{ matrix.arch }}
+          pattern: binaries-linux-*
+          path: dist
 
       - name: Pack
         run: |
-          chmod -v a+x ${{ matrix.arch }}/*
-          zip -j rustdesk-server-linux-${{ matrix.arch }}.zip ${{ matrix.arch }}/*
+          set -eu
+          for arch in amd64 arm64; do
+            dir="dist/binaries-linux-$arch"
+            test -d "$dir" || { echo "::error::no binaries for $arch"; exit 1; }
+            chmod -v a+x "$dir"/*
+            zip -j "rustdesk-server-linux-$arch.zip" "$dir"/*
+          done
+          ls -l rustdesk-server-linux-*.zip
 
       - name: Draft release
         uses: softprops/action-gh-release@v3
         with:
           draft: true
-          files: rustdesk-server-linux-${{ matrix.arch }}.zip
+          files: |
+            rustdesk-server-linux-amd64.zip
+            rustdesk-server-linux-arm64.zip
