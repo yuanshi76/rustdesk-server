@@ -4,7 +4,8 @@ name: upstream-watch
 # series onto it, and opens a PR for a human to review. It never merges.
 #
 # A second job, `master-watch`, watches upstream's default branch, where fixes land
-# long before a release, and keeps one issue open listing what is not merged yet.
+# long before a release, and keeps one issue open listing what is not merged yet. A
+# third, `audit`, does the same for new security advisories in the dependencies.
 #
 # Two GitHub behaviours this has to work around:
 #
@@ -63,7 +64,7 @@ jobs:
       changed: ${{ steps.compare.outputs.changed }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Compare
         id: compare
@@ -97,13 +98,34 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Report commits not merged
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PRETEND_BASE: ${{ inputs.pretend_base }}
         run: .github/scripts/upstream-master-watch.sh
+
+  # Known security advisories in Cargo.lock that nobody has reviewed yet. New ones
+  # appear without any change here, which is why this runs daily and not only on a
+  # push. Keeps one issue open while there are any; see .github/audit-known.txt and
+  # .github/scripts/dependency-audit.sh (runs locally with DRY_RUN=1).
+  audit:
+    name: Check dependencies for new security advisories
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Report unreviewed advisories
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: SUMMARY="$GITHUB_STEP_SUMMARY" .github/scripts/dependency-audit.sh
 
   # A manual run only, and deliberately not a dependency of anything: it must
   # be able to fail loudly without blocking the merge or the keepalive. It is
@@ -151,7 +173,7 @@ jobs:
       # - see the note at the top of this file. Using the PAT here made a bad
       # PAT break checkout, which is a confusing place to discover it.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           submodules: recursive
@@ -358,7 +380,7 @@ jobs:
       # Pushing this with the PAT would start a full CI run, soak included,
       # every time the timestamp moved.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # GitHub disables a scheduled workflow after 60 days of repository
       # inactivity. Commit at most once a month, which is enough to reset that

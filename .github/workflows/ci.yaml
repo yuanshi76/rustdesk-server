@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -47,6 +47,19 @@ jobs:
 
       - name: Backup script tests
         run: python3 -m unittest discover -s tools/backup -v
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Report only: known vulnerabilities in Cargo.lock go to the job summary,
+      # unreviewed ones first. The daily job in upstream-watch.yaml is what opens an
+      # issue. See .github/audit-known.txt.
+      - name: Dependency audit (report)
+        env:
+          NO_ISSUE: "1"
+        run: SUMMARY="$GITHUB_STEP_SUMMARY" .github/scripts/dependency-audit.sh
 
       # Formatting is checked, and enforced, on the files this fork owns only.
       # Upstream's own files are not rustfmt-clean, and reformatting them is what
@@ -74,7 +87,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 

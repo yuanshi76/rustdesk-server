@@ -1020,3 +1020,95 @@ substituting its pick in either message) fail it. Not run against a real 1.5.3 c
 Not taken up: client 1.5.0 WebRTC signalling and key exchange v1 need hbb_common past
 upstream's pin (69cea8d); neither upstream's server nor this fork forwards them, and clients
 fall back. Client 1.5.1 warns on a non-local http:// API server (the user's is http).
+
+
+### Optional WebRTC signalling (2026-11-12)
+
+Client 1.5.0 races a WebRTC transport (webrtc-rs: ICE/STUN/DTLS). hbbs carries signalling
+only: offer PunchHoleRequest.12 -> PunchHole.10; answer PunchHoleSent.8 ->
+PunchHoleResponse.12 (RelayResponse.12 rides along, the message is forwarded whole and
+rust-protobuf 3 keeps unknown fields); ICE candidates RendezvousMessage.29 IceCandidate{id 1,
+socket_addr 2, session_key 3, candidate 4}. Read from the client's source (client.rs,
+rendezvous_mediator.rs, hbb_common webrtc.rs). The contracts that matter: the controller
+uses ONE connection for request, early candidates, response and the rest of the trickle
+("never reconnect this socket: its address is the return route ... resolves the echo
+through tcp_punch"), so hbbs must not drop its sink after the response and must not close
+it on an IceCandidate; the peer sends its candidates on a separate encrypted TCP connection,
+naming the controller by the mangled address from PunchHole, and expects it kept open.
+Upstream's OSS server has none of this (hbb_common pin 69cea8d predates the fields); Pro
+1.8.7 "add Webrtc support". The client disables WebRTC by default for non-public servers.
+
+Built as `src/webrtc_signal.rs` (`WebRtcSignal`), off unless `WEBRTC=Y`. hbb_common is NOT
+moved (145 commits behind its main): the fields are read/written as protobuf unknown
+fields; IceCandidate is parsed via `well_known_types::Empty` (everything lands in unknown
+fields). Hooks in rendezvous_server.rs: offer in `handle_tcp_punch_hole_request`, answer in
+`handle_hole_sent`, `send_to_tcp_keep` (sink re-inserted only while the attempt lasts) for
+the response and for RelayResponse-with-answer, ICE in `handle_tcp` before the union match,
+`forget` on connection close, `webrtc` console command. Limits: candidates only within an
+offered attempt (60 s), toward the controller only from the peer's IP, 128 per direction,
+4096 attempts. FetchLocalAddr (same LAN) has no offer field, so no WebRTC there.
+
+Tests: 4 unit tests and tests/webrtc_signal.rs (real hbbs with a key; desktop-style
+encrypted TCP controller, websocket peer): on = offer, answer, candidates both ways after
+the response, stranger dropped; off = the punch works, nothing new passes; RelayResponse
+answer path keeps the connection; WEBRTC=Y but no offer = exactly as before. Seven mutations
+(offer/answer not forwarded, sink dropped after response, IP check removed, relay path
+drops connection, on regardless of setting, controller's candidates not routed) each fail a
+test. NOT run with real clients.
+
+
+### Release lines, STUN guide (2026-11-12)
+
+The user asked for v0.5.0 (WebRTC) while keeping v0.4.x usable, since WebRTC's stability
+is unproven. So: v0.5.0 is published as a GitHub **pre-release** and v0.4.2 stays "Latest";
+`release/0.4` branches from the v0.4.2 tag for 0.4.x fixes (CI now runs on `release/**`);
+compose examples on main stay on v0.4.2; docs/versions.md explains pinning, switching both
+ways (no on-disk difference between v0.4.2 and v0.5.0: database, keys, relay code
+unchanged), `docker save` for an offline copy, and rebuilding from the tag.
+
+docs/stun.md: client option `ice-servers`, comma-separated; any `stun:` entry REPLACES the
+four defaults (Cloudflare, Google, antisip, nextcloud:443); `turn://user:pass@host:port`,
+a TURN entry without credentials is dropped (webrtc-rs would otherwise fail every peer
+connection); no settings-screen field, set with `rustdesk --option ice-servers ...` on an
+installed client as admin (from client source, not run here). The UI switch is "Enable
+WebRTC P2P connection" (Settings > General > Other, `enable-webrtc`). coturn 4.18.0 tested
+locally: STUN-only `-n --stun-only --listening-port=3478 --no-tls --log-file=stdout`
+answers; `--no-cli` and `--no-dtls` are REJECTED by 4.18 (prints help, exits). TURN with
+`--lt-cred-mech --user --realm --min/max-port`: turnutils_uclient relayed 40/40 messages,
+wrong password refused (`--allow-loopback-peers` only for the loopback test). On macOS the
+colima VM does not forward published UDP ports, so STUN was tested inside the container's
+network namespace. tools/stun/stun_check.py (stdlib STUN client) + 6 tests; checked against
+the four public defaults (all answered; it flagged this Mac's proxy as two public addresses).
+
+
+### Maintenance 2026-11-26 (v0.4.3, v0.5.1)
+
+- Base images: the build stages used alpine:3.20, end of life 2026-04-01; the images copy
+  their CA bundle (used by geo-update's TLS) from that stage, so it had stopped receiving
+  root-certificate updates. Now alpine:3.24 (supported to 2028-06). s6-overlay 3.2.0.0 ->
+  3.2.3.2. The s6-api image was built on `lejianwen/rustdesk-api:latest`; now pinned to
+  v2.7 (its latest release) so rebuilds are repeatable; compose examples pinned the same.
+- Dependencies: cargo-audit listed 45 advisories. Updated within the same version line,
+  one named package at a time, checking the lockfile diff each time (the old
+  signature-merge trap did not recur): openssl 0.10.68->0.10.82 (+openssl-sys),
+  rustls 0.23.42->0.23.46, rustls-webpki 0.103.13->0.103.17, webpki-roots and
+  webpki-root-certs 1.0.9->1.0.12, zstd 0.13.6 / zstd-safe 7.4.2 / zstd-sys 2.2.0,
+  crossbeam-epoch 0.9.21, url 2.5.9 (+form_urlencoded), pkg-config. `cargo update -p X`
+  stopped rustls at 0.23.43 and left url alone because they share dependencies with other
+  packages; `--precise` moved them with one extra helper each. 22 fixed, 0 new; the 23
+  left need major upgrades upstream chose (sqlx 0.6 with bundled SQLite CVEs, reqwest 0.11
+  with rustls 0.21 / webpki 0.101, axum 0.5 with h2 0.3). Listed with reasons in
+  .github/audit-known.txt (keyed by id, library AND version: keyed without version, a
+  vulnerable new copy hid behind a reviewed old one; caught by a dry run on the old
+  lockfile, which then flagged exactly the 22).
+- GitHub Actions: every run warned that Node 20 is deprecated. checkout v4->v7,
+  download-artifact v4->v8, upload-artifact v4->v7, build-push v6->v7, login/buildx/qemu
+  v3->v4, action-gh-release v2->v3 (release notes read: Node 24 runtime; buildx v4
+  removed inputs this repo does not use; download-artifact v8 errors on hash mismatch and
+  skips unzipping non-zip content, neither affecting zipped uploads; checkout v6 keeps
+  credentials in a separate file, which the monthly keepalive push relies on and which is
+  meant to be transparent).
+- Dependency audit: `.github/scripts/dependency-audit.sh` + daily `audit` job in
+  upstream-watch (one issue while unreviewed advisories exist, closed when none) and a
+  report step in CI (job summary, NO_ISSUE=1). cargo-audit via taiki-e/install-action.
+- Release lines: the same changes go to release/0.4 (v0.4.3) and main (v0.5.1).
